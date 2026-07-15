@@ -1,0 +1,12 @@
+# Blindfold configuration example.
+# Copy to blindfold.yaml next to your entry point.
+
+schemas:
+  hr_api.get_salary:
+    sensitive_fields:
+      - path: $.salary
+        semantic_type: salary
+        unit: EUR/year
+
+tokens:
+  default_ttl: 3600
