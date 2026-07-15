@@ -13,7 +13,7 @@
 - Tokenizes fields declared in `blindfold.yaml` (`schemas:` block) inside every `tools/call` response before forwarding to the harness.
 - Exposes an extra MCP tool `blindfold_compute(code: str, inputs: list[str])` that resolves tokens, runs code in a Python subprocess sandbox, stores the result as a new token with lineage, and returns that token.
 - In-memory vault only. Session-bound policy: one wrapped subprocess = one session; tokens minted in session S cannot be resolved from any other session.
-- Library helper `blindfold.rehydrate(text, session_id) -> str` and a demo harness (`examples/demo_chat.py`) using the Anthropic SDK + a fake HR MCP fixture to prove the whole flow end-to-end.
+- Library helper `blindfold.rehydrate(text, session_id, store) -> str` **and** a custom JSON-RPC method `blindfold/rehydrate` exposed by the proxy (same logic; the RPC form is how a standalone-CLI-mode harness reaches into the proxy's in-process vault). The demo harness (`examples/demo_chat.py`) uses the library form for simplicity — it constructs `blindfold.Proxy` in-process wrapping `fake_hr_mcp` as a subprocess (so the vault is a shared Python object). The standalone CLI mode is exercised by the integration test via stdio + the RPC method.
 - Tests: unit (`core/`, `sandbox/`), integration (real proxy child process), e2e (replay of a canned LLM transcript).
 
 ### Explicitly out-of-MVP (documented, not built)
@@ -206,6 +206,13 @@ Path dialect at MVP: static paths (`$.a.b.c`) and one-level `[*]` wildcards (`$.
 
 - Proxy intercepts `tools/list` responses and appends a fixed tool definition (name, description, JSON schema for `code`+`inputs`).
 - Tool description explicitly teaches the LLM the token protocol: "arguments referenced from `code` must be listed in `inputs`; return value must be JSON-serializable; you will get a token back, not a value".
+
+### E. Rehydrate over the wire (`blindfold/rehydrate` RPC method)
+
+- The proxy also accepts a custom JSON-RPC request with `method: "blindfold/rehydrate"` and `params: {text, session_id}`, returning `{text}`.
+- Not advertised in `tools/list` — this is a control-plane method, not an LLM-facing tool.
+- Same underlying `Rehydrator` code as the library helper; the two forms differ only in transport.
+- Integration test drives this method over stdio; the demo uses the library form directly.
 
 ## 7. Testing strategy
 
