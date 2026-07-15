@@ -114,16 +114,33 @@ Tokens use collision-proof delimiters (`⟦tok_…⟧`). Before delivery, Blindf
 
 ## Quick start
 
-```bash
-# Wrap any MCP server — one line, safe defaults (in-memory vault,
-# session-bound detokenization, sandboxed compute):
-npx blindfold -- npx -y @your-org/some-mcp-server
+Blindfold ships as a Python package. Two ways to use it:
 
-# Or run as an HTTP proxy in front of a REST API:
-npx blindfold serve --config blindfold.yaml
+**As a CLI wrapping another stdio MCP server:**
+
+```bash
+# Install with pipx (isolated) or uv (project-local):
+pipx install blindfold
+# or:  uv add blindfold
+
+# Wrap any stdio MCP server; blindfold reads ./blindfold.yaml if present:
+blindfold --config blindfold.yaml -- python -m your_org.some_mcp_server
 ```
 
-Out of the box, nothing needs configuring: memory store, session-bound authorization, subprocess sandbox. Configuration is something you discover when you need it, not a prerequisite.
+**As an in-process library (used by a harness you write):**
+
+```python
+from blindfold import rehydrate
+from blindfold.core.vault import MemoryTokenStore
+from blindfold.core.policy import SessionBoundPolicy
+
+store = MemoryTokenStore()
+policy = SessionBoundPolicy()
+# ... your harness tokenizes tool results into `store`, then at the end:
+final_text = rehydrate(llm_answer, session_id, store, policy)
+```
+
+Out of the box, nothing needs configuring: memory vault, session-bound authorization, subprocess sandbox. Configuration is something you discover when you need it, not a prerequisite. See [`examples/demo_chat.py`](examples/demo_chat.py) for an Anthropic SDK loop end-to-end.
 
 ## Configuration
 
@@ -164,6 +181,8 @@ compute:
 ```
 
 Two built-in profiles cover the common cases: **`local`** (single user, memory/SQLite vault, stdio MCP transport) and **`server`** (multi-user, Redis vault, webhook authorization, HTTP transport). Same core, no forks.
+
+> **MVP note:** the current release consumes only the `schemas` and `tokens` sections. Other keys shown above are declarative for the roadmap and are safely ignored today.
 
 ## Pluggable architecture
 
