@@ -252,6 +252,17 @@ Read this before deploying. Honesty here is a feature.
 - [ ] CaMeL-style capability tracking in the compute sandbox
 - [ ] Docker sandbox, audit log exporter
 
+## Documentation
+
+Deep dives, in order of what you likely want next:
+
+- **[`docs/architecture.md`](docs/architecture.md)** — how the code actually works. Component-by-component tour with a full end-to-end frame-by-frame example. Start here after this README.
+- **[`LIMITATIONS.md`](LIMITATIONS.md)** — honest list of what Blindfold does *not* do, split into by-design (permanent) and MVP (temporary). Read before deploying against real data.
+- **[`docs/superpowers/specs/2026-07-15-blindfold-mvp-design.md`](docs/superpowers/specs/2026-07-15-blindfold-mvp-design.md)** — the formal MVP design doc: scope, architecture, data model, key flows, testing strategy. The source of truth for what got built.
+- **[`docs/superpowers/plans/2026-07-15-blindfold-mvp.md`](docs/superpowers/plans/2026-07-15-blindfold-mvp.md)** — the task-by-task implementation plan the MVP was built from. Useful if you want to understand the order of decisions or see the reasoning behind each file.
+- **[`blindfold.example.yaml`](blindfold.example.yaml)** — a copy-paste-ready configuration example.
+- **[`examples/demo_chat.py`](examples/demo_chat.py)** — a runnable Anthropic + Blindfold + fake HR MCP loop.
+
 ## Contributing
 
 Issues and PRs welcome. Especially wanted: storage/policy adapters, red-teaming of the threat model, and real-world schema examples. Please read the threat model section before proposing features that move detokenization client-side.
