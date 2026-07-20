@@ -6,6 +6,17 @@ For rationale and full threat-model discussion, see the [README](README.md#threa
 
 ---
 
+## Deployment surface (context for the limits below)
+
+Blindfold has two integration modes; a few of the limits below apply to only one of them.
+
+- **Mode A: CLI proxy** — `blindfold -- <mcp-server>`, wraps a stdio MCP server. Requires that your app already speak MCP (Claude Desktop, Cursor, custom agent on the `mcp` client SDK, etc.).
+- **Mode B: In-process library** — `from blindfold import ...`, called from your existing agent loop. Works with any LLM SDK (Anthropic, OpenAI, Gemini, self-hosted, LangChain, LlamaIndex, …); no MCP required.
+
+Unless a bullet is tagged `[Mode A only]` or `[Mode B only]`, the limit applies to both modes. See [`docs/architecture.md#3-two-integration-modes`](docs/architecture.md#3-two-integration-modes) for the full picture, including the four integration points for Mode B.
+
+---
+
 ## By-design limits (permanent)
 
 These come from the shape of the problem. No amount of implementation work removes them; they are the deal you accept when adopting a proxy-based approach.
@@ -47,7 +58,7 @@ Everything below is a current-release gap. All of these are fixable and are call
 - **No concurrency handling on the vault.** MVP is single-process, single-session. Adding SQLite requires locking.
 
 ### Transport
-- **Only stdio MCP wrapping.** No HTTP proxy mode for REST APIs.
+- **CLI proxy is stdio MCP only. [Mode A only]** The `blindfold -- <cmd>` CLI wraps a single downstream stdio MCP server. No HTTP proxy mode for REST APIs, no wrapping of remote/SSE MCP servers. Mode B (in-process library) has no transport concept — it plugs into any LLM SDK loop directly, MCP or not.
 - **Cross-platform CI missing.** Developed and tested on Windows. Linux/macOS should work but there is no CI yet to confirm.
 
 ### Sandboxing

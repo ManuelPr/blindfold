@@ -27,7 +27,71 @@ The model cannot compare two opaque tokens. So Blindfold exposes an extra MCP to
 
 When the model's final answer contains tokens, the harness calls `rehydrate(text, session_id, store, policy)` — which regex-scans for `⟦tok_…⟧`, checks each one against the session-bound policy, and substitutes real values only for the caller's own tokens. Missing tokens surface as `[unknown token]` (protection against hallucination); policy-denied tokens surface as `[redacted]` (protection against cross-session leakage).
 
-## 3. The system, one component per file
+## 3. Two integration modes
+
+Blindfold ships as one Python package with two deployment surfaces. Which one fits your app depends on how your app already talks to its tools.
+
+### Mode A: CLI proxy — `blindfold -- <mcp-server>`
+
+For apps that already speak MCP as a client — Claude Desktop, Cursor, Windsurf, Zed, custom agents built on the `mcp` Python client SDK, and other frameworks that have added MCP support. You wrap the existing MCP server command with `blindfold --`:
+
+```jsonc
+// Before (e.g. in Claude Desktop's claude_desktop_config.json):
+{
+  "command": "python",
+  "args": ["-m", "your_org.hr_mcp"]
+}
+// After:
+{
+  "command": "blindfold",
+  "args": ["--config", "blindfold.yaml", "--", "python", "-m", "your_org.hr_mcp"]
+}
+```
+
+Zero application-code change. The proxy handles tokenization on `tools/call` responses, injects the `blindfold_compute` tool into `tools/list`, and answers the custom `blindfold/rehydrate` JSON-RPC method over the wire.
+
+### Mode B: In-process library — `from blindfold import ...`
+
+For apps that call LLMs directly via SDK (Anthropic, OpenAI, Gemini, self-hosted via LiteLLM/vLLM/Ollama, and any framework built on those — LangChain, LlamaIndex, Haystack, custom loops) — the majority of enterprise Python agents. You import the pieces you need and call them at four points in your existing tool loop:
+
+```python
+from blindfold import rehydrate
+from blindfold.core.vault import MemoryTokenStore
+from blindfold.core.policy import SessionBoundPolicy
+from blindfold.core.tokenizer import tokenize_result, SchemaField
+from blindfold.sandbox.subprocess_ import SubprocessSandbox
+from blindfold.tools.blindfold_compute import build_tool_definition, handle_blindfold_compute
+
+store = MemoryTokenStore()
+policy = SessionBoundPolicy()
+sandbox = SubprocessSandbox()
+session_id = f"user_{user_uuid}"
+fields = [SchemaField(path="$.salary", semantic_type="salary", unit="EUR/year")]
+```
+
+Four integration points in your loop:
+
+1. **Advertise `blindfold_compute` to the model.** Add `build_tool_definition()` to the tools list you pass to the LLM SDK.
+2. **Tokenize every real tool result.** When the model calls one of your normal tools, run `tokenize_result(payload, tool_name, fields, store, session_id, ttl)` on the response before feeding it back as `tool_result`.
+3. **Route the model's `blindfold_compute` calls.** When the tool_use name is `blindfold_compute`, call `handle_blindfold_compute(args, store=..., policy=..., sandbox=..., session_id=..., ttl_seconds=...)` and return its result as a normal tool_result.
+4. **Rehydrate before display.** When the model produces its final text, call `rehydrate(final_text, session_id, store, policy)` and print that.
+
+Framework-agnostic, LLM-agnostic. Works with any provider that supports tool use / function calling. See [`examples/demo_chat.py`](../examples/demo_chat.py) for the full pattern against the Anthropic SDK — swapping in OpenAI or Gemini is a matter of changing the SDK client and the tool_result payload shape.
+
+### Which mode do you need?
+
+| Your setup | Mode |
+|---|---|
+| Claude Desktop / Cursor / Windsurf / Zed + stdio MCP server | A |
+| Custom agent that already speaks MCP via `mcp` Python SDK | A (or B if you'd rather integrate at the SDK layer) |
+| Enterprise agent using Anthropic / OpenAI / Gemini SDK directly | B |
+| LangChain / LlamaIndex / Haystack | B |
+| Self-hosted LLM (Ollama, vLLM, LiteLLM) | B |
+| Multi-provider gateway (Portkey, LangSmith proxy, etc.) | B, wrapped once at your gateway layer |
+
+**Same core, two seams.** The `Rehydrator`, `Tokenizer`, `MemoryTokenStore`, `SessionBoundPolicy`, `SubprocessSandbox`, and `blindfold_compute` handler are the same objects in both modes; only the transport around them differs. The proxy in Mode A is a very thin adapter that translates MCP JSON-RPC into calls on the same library objects Mode B uses directly.
+
+## 4. The system, one component per file
 
 Every component lives in exactly one file. Ports are ABCs so alternative implementations are additive.
 
@@ -141,7 +205,7 @@ The wire orchestrator. `run_proxy(downstream_cmd, config_path)`:
 
 A thin argparse layer. `blindfold [--config PATH] -- <cmd> [args...]`: parses the pre-`--` options, treats everything after `--` as the downstream command, calls `run_proxy`. Also exposed as `python -m blindfold` via [`__main__.py`](../src/blindfold/__main__.py).
 
-## 4. End-to-end example: "Who earns more, Manuel or Andrea?"
+## 5. End-to-end example: "Who earns more, Manuel or Andrea?"
 
 Setup: `fake_hr_mcp` (in [`examples/fake_hr_mcp/`](../examples/fake_hr_mcp/)) hard-codes `Manuel Pernigotto → 62000`, `Andrea Tuscano → 71000`. Config declares `$.salary` as sensitive on `get_salary`.
 
@@ -216,7 +280,7 @@ The harness calls `rehydrate("The higher earner is ⟦tok_9c1bf051⟧.", session
 
 Printed to the user: **"The higher earner is Andrea Tuscano."**
 
-## 5. Package layout at a glance
+## 6. Package layout at a glance
 
 ```
 src/blindfold/
