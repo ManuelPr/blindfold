@@ -27,6 +27,8 @@ The model cannot compare two opaque tokens. So Blindfold exposes an extra MCP to
 
 When the model's final answer contains tokens, the harness calls `rehydrate(text, session_id, store, policy)` — which regex-scans for `⟦tok_…⟧`, checks each one against the session-bound policy, and substitutes real values only for the caller's own tokens. Missing tokens surface as `[unknown token]` (protection against hallucination); policy-denied tokens surface as `[redacted]` (protection against cross-session leakage).
 
+Note the subject of that sentence: **the harness calls it.** Rehydration is a function invoked on the final text by code that owns the final text. This is the one idea of the three that Blindfold cannot perform on your behalf, and §3 explains what that costs in each mode.
+
 ## 3. Two integration modes
 
 Blindfold ships as one Python package with two deployment surfaces. Which one fits your app depends on how your app already talks to its tools.
@@ -48,7 +50,15 @@ For apps that already speak MCP as a client — Claude Desktop, Cursor, Windsurf
 }
 ```
 
-Zero application-code change. The proxy handles tokenization on `tools/call` responses, injects the `blindfold_compute` tool into `tools/list`, and answers the custom `blindfold/rehydrate` JSON-RPC method over the wire.
+No application code changes for the *protection* half: the proxy tokenizes `tools/call` responses, injects `blindfold_compute` into `tools/list`, and the LLM provider stops seeing values. That part genuinely is a config-file edit.
+
+**The rehydration half does not come for free, and with a third-party client it does not come at all.** The proxy answers a custom JSON-RPC method, `blindfold/rehydrate` — custom meaning *this project invented it*. It is not in the MCP specification, so Claude Desktop, Cursor and Zed have no reason to call it, and they don't. Wrapped under one of those, the assistant's answer reaches the user as:
+
+> The higher earner is ⟦tok_9c1bf051⟧.
+
+There is no fix inside the proxy. It sits on the tool channel, below the client; the assistant's final message never passes through it, and MCP gives a server no hook on what the model says. Exposing rehydration as a normal tool would work mechanically and defeat the design, since a tool result lands in the model's context — precisely where the values must not go.
+
+So Mode A is the right shape when hiding values from the provider is the whole goal and placeholders in the output are acceptable, or when the MCP client is yours and can be taught the extra method. When a human has to read the values, use Mode B.
 
 ### Mode B: In-process library — `from blindfold import ...`
 
@@ -82,8 +92,8 @@ Framework-agnostic, LLM-agnostic. Works with any provider that supports tool use
 
 | Your setup | Mode |
 |---|---|
-| Claude Desktop / Cursor / Windsurf / Zed + stdio MCP server | A |
-| Custom agent that already speaks MCP via `mcp` Python SDK | A (or B if you'd rather integrate at the SDK layer) |
+| Claude Desktop / Cursor / Windsurf / Zed + stdio MCP server | A — with placeholders in the user-visible answer (see above) |
+| Custom agent that already speaks MCP via `mcp` Python SDK | A if you add the `blindfold/rehydrate` call, otherwise B |
 | Enterprise agent using Anthropic / OpenAI / Gemini SDK directly | B |
 | LangChain / LlamaIndex / Haystack | B |
 | Self-hosted LLM (Ollama, vLLM, LiteLLM) | B |
@@ -119,7 +129,9 @@ Small ABCs, one per orthogonal concern. Only one implementation of each ships at
 
 ### Vault — [`src/blindfold/core/vault.py`](../src/blindfold/core/vault.py)
 
-`MemoryTokenStore` — the only `TokenStore` in the MVP. Backed by a plain `dict[str, VaultRecord]`. Lazy TTL expiry on `get`/`resolve`; eager on `purge_expired`. `invalidate_cascade` runs a fixpoint sweep over `lineage.inputs` to remove all descendants of an invalidated token. Also exposes the static `mint_token()` factory used by tokenizer and compute handler alike: `f"⟦tok_{secrets.token_hex(4)}⟧"` — 8 hex characters between U+27E6 / U+27E7 white square brackets, chosen for collision-proof detection.
+`MemoryTokenStore` — the only `TokenStore` in the MVP. Backed by a plain `dict[str, VaultRecord]`. Lazy TTL expiry on `get`/`resolve`; eager on `purge_expired`. `invalidate_cascade` runs a fixpoint sweep over `lineage.inputs` to remove all descendants of an invalidated token.
+
+**Neither `purge_expired` nor `invalidate_cascade` is called by the runtime today** — they are API surface for your code, not automatic behavior. Expired records are still never *returned* (`get` filters them), but they are never freed either, so the dict grows for the life of the process. Also exposes the static `mint_token()` factory used by tokenizer and compute handler alike: `f"⟦tok_{secrets.token_hex(4)}⟧"` — 8 hex characters between U+27E6 / U+27E7 white square brackets, chosen for collision-proof detection.
 
 ### Policy — [`src/blindfold/core/policy.py`](../src/blindfold/core/policy.py)
 
@@ -134,9 +146,9 @@ The heart of Blindfold's schema-driven approach:
 3. For each match: mints a token, builds a `VaultRecord` with `_infer_dtype(value)` (`bool`/`int`/`float`/`str` → `boolean`/`number`/`string`; anything else → `object`), calls `store.put`, then replaces the value in the tree with the token string.
 4. Returns the mutated copy.
 
-The JSONPath dialect is intentionally minimal at MVP: static keys (`$.a.b`) and one-level list wildcards (`$.list[*].field`). No filters, no recursive descent — see [`LIMITATIONS.md`](../LIMITATIONS.md).
+The JSONPath dialect is intentionally minimal at MVP, though not as minimal as this document previously claimed: static keys (`$.a.b`), list wildcards at any depth including nested ones (`$.a[*].b[*].c` descends correctly — `_walk` recurses), and explicit numeric indices (`$.items[0].name`). No filters, no recursive descent (`$..salary`), no slicing — see [`LIMITATIONS.md`](../LIMITATIONS.md).
 
-**Paths that don't match are no-ops.** Declare paths defensively — the cost is zero and it protects against unexpected response shapes.
+**Paths that don't match are no-ops.** Declare paths defensively — the cost is zero and it protects against unexpected response shapes. The same forgiveness has a sharp edge: unsupported syntax and typos also match nothing, silently, so a `$..salary` in your config protects exactly nothing and says so nowhere. Only a missing `$` prefix raises.
 
 ### Rehydrator — [`src/blindfold/core/rehydrator.py`](../src/blindfold/core/rehydrator.py)
 
@@ -160,7 +172,11 @@ Publicly re-exported as `from blindfold import rehydrate` for harness use.
 6. The user code MUST assign to a variable named `result`; the wrapper serializes `result` to JSON on stdout.
 7. Parent reads stdout, parses the envelope, returns the value.
 
-Every failure path — timeout, non-JSON output, syntax error, unassigned `result`, non-serializable `result`, unlisted-token lookup — surfaces as a single `SandboxError` with an informative message. See [`LIMITATIONS.md`](../LIMITATIONS.md) for what this sandbox does **not** protect against.
+Every failure path — timeout, non-JSON output, syntax error, unassigned `result`, non-serializable `result`, unlisted-token lookup — surfaces as a single `SandboxError` with an informative message.
+
+**That last property is currently a leak.** "Informative" means the child's exception text is forwarded to the model, so code like `raise ValueError(resolve("⟦tok_…⟧"))` returns the hidden value as a tool result in one call. Step 2's clean environment is also weaker than it looks: it removes inherited variables and `site-packages`, not file access — the child keeps full `__builtins__`, so `open()` and `import` work. Network access is open on Linux and macOS; on Windows it happens to fail because the stripped environment omits `SystemRoot` and sockets cannot initialize without it, which is an accident rather than a control.
+
+[`LIMITATIONS.md`](../LIMITATIONS.md#sandboxing) has the full list, each entry marked with whether it can be closed and at what cost.
 
 ### `blindfold_compute` tool — [`src/blindfold/tools/blindfold_compute.py`](../src/blindfold/tools/blindfold_compute.py)
 
@@ -208,6 +224,8 @@ A thin argparse layer. `blindfold [--config PATH] -- <cmd> [args...]`: parses th
 ## 5. End-to-end example: "Who earns more, Manuel or Andrea?"
 
 Setup: `fake_hr_mcp` (in [`examples/fake_hr_mcp/`](../examples/fake_hr_mcp/)) hard-codes `Manuel Pernigotto → 62000`, `Andrea Tuscano → 71000`. Config declares `$.salary` as sensitive on `get_salary`.
+
+The harness in this trace is one you wrote — [`examples/demo_chat.py`](../examples/demo_chat.py) is the running version of it. Frames 1–6 play out identically under a third-party MCP client; frame 7 is the one that requires your own code, and the reason the trace is written this way.
 
 ### Frame 1: user asks, harness lists tools
 ```
@@ -279,6 +297,8 @@ The harness calls `rehydrate("The higher earner is ⟦tok_9c1bf051⟧.", session
 - Substitute → `"The higher earner is Andrea Tuscano."`
 
 Printed to the user: **"The higher earner is Andrea Tuscano."**
+
+Under Claude Desktop or Cursor, with nothing making that call, the last line reads **"The higher earner is ⟦tok_9c1bf051⟧."** instead. Same protection, no delivery.
 
 ## 6. Package layout at a glance
 
