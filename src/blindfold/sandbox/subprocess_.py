@@ -27,7 +27,7 @@ from typing import Any
 from blindfold.ports.sandbox import ComputeSandbox, SandboxError
 
 _CHILD_WRAPPER = r"""
-import json, sys
+import builtins, json, sys
 
 # Nothing below may put an exception's *message* into the envelope. The
 # envelope is handed to the model, and a message is attacker-controlled text:
@@ -48,7 +48,26 @@ def resolve(token):
         raise KeyError(f"resolve(): token {token!r} not declared in inputs")
     return inputs[token]
 
-globs = {"resolve": resolve, "__builtins__": __builtins__}
+# The model's code runs with an allow-list instead of the full builtins.
+# Without `open`, `__import__`, `eval` and friends there is no direct route to
+# the filesystem or the network. This raises the cost of an escape; it does not
+# make one impossible — reaching object.__subclasses__() through the object
+# graph needs no builtins at all. See LIMITATIONS.md#sandboxing.
+_ALLOWED = (
+    # aggregation and arithmetic — what blind compute is actually for
+    "abs all any divmod enumerate filter len map max min pow range reversed "
+    "round sorted sum zip isinstance"
+    # value types
+    " bool dict float frozenset int list set str tuple"
+    # exception types, so code can use try/except over messy data
+    " ArithmeticError Exception IndexError KeyError TypeError ValueError "
+    "ZeroDivisionError"
+).split()
+
+globs = {
+    "resolve": resolve,
+    "__builtins__": {name: getattr(builtins, name) for name in _ALLOWED},
+}
 locs = {}
 try:
     exec(compile(code, "<blindfold_compute>", "exec"), globs, locs)

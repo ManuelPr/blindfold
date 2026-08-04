@@ -178,7 +178,9 @@ Every failure path — timeout, malformed output, syntax error, unassigned `resu
 
 **That message is a second way out of the sandbox, so it is deliberately uninformative.** It names the exception's *type* and nothing else: `raise ValueError(resolve("⟦tok_…⟧"))` returns `ValueError`, not the value it used to return. Child stdout and stderr never reach the caller either — they are printed to the operator's own stderr, where the model cannot see them. The envelope is also checked for shape rather than just parsed, since a bare `print(62000)` from user code leaves a last line that is valid JSON.
 
-Step 2's clean environment is weaker than it looks: it removes inherited variables and `site-packages`, not file access — the child keeps full `__builtins__`, so `open()` and `import` work. Network access is open on Linux and macOS; on Windows it happens to fail because the stripped environment omits `SystemRoot` and sockets cannot initialize without it, which is an accident rather than a control.
+Step 5's exec scope carries an **allow-list instead of the full builtins**: aggregation functions, value types and a few exception types. `open`, `__import__`, `eval`, `exec`, `getattr`, `type` and `globals` are simply not names in that namespace, so the direct routes to the filesystem and the network are gone — `os.listdir(".")` returns `ImportError`, `open(...)` returns `NameError`. Step 2's environment cleanup was never doing that job: it removes inherited variables and `site-packages`, not file access.
+
+This raises the cost of an escape rather than preventing one. Reaching `object.__subclasses__()` through the object graph needs no builtins at all. Real isolation is an operating-system question, which is what the Docker adapter is for.
 
 [`LIMITATIONS.md`](../LIMITATIONS.md#sandboxing) has the full list, each entry marked with whether it can be closed and at what cost.
 

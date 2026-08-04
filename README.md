@@ -262,8 +262,8 @@ Read this before deploying. Honesty here is a feature.
   | Channel | Status | Closable? |
   |---|---|---|
   | Exception text was forwarded to the model — `raise ValueError(resolve(t))` returned the value in one call | **closed** | done: types only, with six regression tests |
-  | `__builtins__` is unrestricted in the child, so `open()` and `import` work; the filesystem is readable | **open** | **yes, cheaply** — restrict builtins and block imports. Raises the bar without being airtight; a determined escape through Python internals stays possible |
-  | Network reachable from compute code | **open** on Linux/macOS. On Windows it currently fails, but only as a side effect of the stripped environment breaking socket initialization — an accident, not a defense | **yes**, properly only at OS level: a container with networking off, or equivalent sandboxing |
+  | `open()` and `import` gave the child's code the filesystem | **raised, not closed** | done: builtins are an allow-list, so the obvious routes are absent. Escaping through Python's object graph needs no builtins and remains possible |
+  | Network reachable from compute code | **raised, not closed** — `import socket` now fails like any import. It was open on Linux/macOS; on Windows it failed only as a side effect of the stripped environment breaking socket initialization, an accident, not a defense | **properly only at OS level**: a container with networking off, or equivalent sandboxing |
   | Success-vs-failure as a one-bit oracle — `result = 1/0 if resolve(t) > 50000 else 'ok'`, repeated, recovers an exact number in ~20 calls | **open** | **no**, not while the model submits arbitrary Python. Only a fixed set of operations (the table design above) removes it |
 
   A CaMeL-style capability/data-flow layer is the long-term answer to the class as a whole. Until then: **do not run blind compute against data whose exposure you cannot tolerate, if the model's inputs come from sources you do not control.** Do not run with `sandbox: disabled` on real data at all.
@@ -300,7 +300,7 @@ Ordered by what the current release most needs, not by ambition.
 - [x] MVP: stdio MCP wrapper, memory store, session-bound policy, subprocess sandbox
 - [x] **Sandbox output hygiene** — exception types only; child stdout/stderr go to the operator, never to the model
 - [x] **Path validation at config load** — syntax the dialect cannot honor is refused at startup instead of being silently reinterpreted
-- [ ] **Restricted builtins in the compute child** — removes the easy filesystem and network paths without requiring anyone to install Docker
+- [x] **Restricted builtins in the compute child** — the easy filesystem and network paths are gone without anyone installing Docker; not a boundary, a higher cost
 - [ ] Export the placeholder-preserving prompt fragment as a package constant
 - [ ] SQLite store, with a decision on TTL policy first — persistence is only worth having if tokens are meant to outlive an hour
 - [ ] Encryption at rest, once there is a disk to encrypt and a place to keep the key that is not next to it
