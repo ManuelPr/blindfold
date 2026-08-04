@@ -148,7 +148,9 @@ The heart of Blindfold's schema-driven approach:
 
 The JSONPath dialect is intentionally minimal at MVP, though not as minimal as this document previously claimed: static keys (`$.a.b`), list wildcards at any depth including nested ones (`$.a[*].b[*].c` descends correctly — `_walk` recurses), and explicit numeric indices (`$.items[0].name`). No filters, no recursive descent (`$..salary`), no slicing — see [`LIMITATIONS.md`](../LIMITATIONS.md).
 
-**Paths that don't match are no-ops.** Declare paths defensively — the cost is zero and it protects against unexpected response shapes. The same forgiveness has a sharp edge: unsupported syntax and typos also match nothing, silently, so a `$..salary` in your config protects exactly nothing and says so nowhere. Only a missing `$` prefix raises.
+**Paths that don't match are no-ops.** Declare paths defensively — the cost is zero and it protects against unexpected response shapes.
+
+**Paths that could never match are refused.** `validate_path` runs wherever a `SchemaField` is created: from `blindfold.yaml` through a Pydantic validator on `SensitiveFieldConfig`, and inside the dataclass itself so Mode B is covered without the YAML. It rejects recursive descent, filters, slices, quoted keys and unbalanced brackets — all of which the walker would otherwise reinterpret rather than honor, `$..salary` quietly becoming `$.salary`. The two behaviors are deliberately different: "did not match this response" is intended, "cannot mean what you wrote" is a configuration bug and fails at startup.
 
 ### Rehydrator — [`src/blindfold/core/rehydrator.py`](../src/blindfold/core/rehydrator.py)
 

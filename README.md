@@ -114,6 +114,8 @@ schemas:
 
 Deterministic, and zero false negatives on declared fields — which is also the catch: a sensitive field you did not declare passes through in cleartext. Declare defensively, including error and debug paths; a path that never matches costs nothing. (An optional NER pass over free-text fields is on the roadmap — see below.)
 
+Paths are checked when the config loads. A path that this dialect cannot honor — recursive descent, a filter, a slice — is refused at startup rather than reinterpreted into something else, because the failure mode that matters here is a config that looks like it protects a field and does not. A path that is well-formed but simply absent from a given response stays a silent no-op, so defensive declaration remains free.
+
 The declared `semantic_type` and `unit` are what the model is told about each path. The runtime data type is recorded in the vault but not surfaced, since the tool description is built from config before any response exists.
 
 ### Robust rehydration
@@ -297,6 +299,7 @@ Ordered by what the current release most needs, not by ambition.
 
 - [x] MVP: stdio MCP wrapper, memory store, session-bound policy, subprocess sandbox
 - [x] **Sandbox output hygiene** — exception types only; child stdout/stderr go to the operator, never to the model
+- [x] **Path validation at config load** — syntax the dialect cannot honor is refused at startup instead of being silently reinterpreted
 - [ ] **Restricted builtins in the compute child** — removes the easy filesystem and network paths without requiring anyone to install Docker
 - [ ] Export the placeholder-preserving prompt fragment as a package constant
 - [ ] SQLite store, with a decision on TTL policy first — persistence is only worth having if tokens are meant to outlive an hour

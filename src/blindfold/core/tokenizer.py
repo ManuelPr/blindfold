@@ -8,6 +8,7 @@ filters, no recursive descent.
 from __future__ import annotations
 
 import copy
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -17,11 +18,66 @@ from blindfold.core.vault import MemoryTokenStore
 from blindfold.ports.token_store import TokenStore
 
 
+_DIALECT = (
+    "Supported: static keys ($.a.b.c), list wildcards at any depth "
+    "($.a[*].b[*].c), and integer indices ($.items[0].name)."
+)
+
+
+def validate_path(path: str) -> None:
+    """Reject path syntax this dialect cannot honor, as early as possible.
+
+    A path that cannot mean what its author intended is a hole, not a no-op:
+    unsupported syntax used to be reinterpreted rather than refused, so
+    ``$..salary`` quietly became ``$.salary`` — matching a top-level field and
+    missing every nested one, while still producing tokens that made the config
+    look like it worked.
+
+    Non-matching is still fine and still silent: declaring a path a given
+    response happens not to contain is the intended defensive style. What is
+    refused here is a path that could never match what it says.
+    """
+    if not path.startswith("$"):
+        raise ValueError(f"path must start with '$': {path!r}. {_DIALECT}")
+    if ".." in path:
+        raise ValueError(
+            f"recursive descent is not supported: {path!r} would silently be read as "
+            f"{'$.' + path.replace('..', '.').lstrip('$.')!r}. Declare each level. {_DIALECT}"
+        )
+    body = path[1:]
+    if body.startswith("."):
+        body = body[1:]
+    if body.endswith("."):
+        raise ValueError(f"path ends with '.': {path!r}. {_DIALECT}")
+
+    # Subscripts are checked against the whole path before the parser splits on
+    # '.', because a filter like [?(@.type == 'x')] contains a dot: splitting
+    # first tears it in half and reports an unbalanced bracket, which sends the
+    # author looking for the wrong mistake.
+    if body.count("[") != body.count("]"):
+        raise ValueError(f"unbalanced brackets in path: {path!r}. {_DIALECT}")
+    for subscript in re.findall(r"\[([^\]]*)\]", body):
+        if subscript == "*":
+            continue
+        try:
+            int(subscript)
+        except ValueError:
+            raise ValueError(
+                f"unsupported subscript '[{subscript}]' in {path!r}: no filters, "
+                f"no slices, no quoted keys. {_DIALECT}"
+            ) from None
+
+    _tokenize_path(body)
+
+
 @dataclass(frozen=True)
 class SchemaField:
     path: str
     semantic_type: str | None = None
     unit: str | None = None
+
+    def __post_init__(self) -> None:
+        validate_path(self.path)
 
 
 def tokenize_result(
@@ -101,7 +157,12 @@ def _resolve_paths(payload: Any, path: str) -> list[tuple[list[str | int], Any]]
 
 
 def _tokenize_path(body: str) -> list[str | int]:
-    """Turn 'items[*].name' into ['items', '*', 'name']."""
+    """Turn 'items[*].name' into ['items', '*', 'name'].
+
+    Strict about subscripts: anything it cannot represent raises rather than
+    being reinterpreted, so `validate_path` can lean on it instead of
+    reimplementing the parse.
+    """
     parts: list[str | int] = []
     if not body:
         return parts
@@ -110,8 +171,19 @@ def _tokenize_path(body: str) -> list[str | int]:
             head, rest = chunk.split("[", 1)
             if head:
                 parts.append(head)
-            idx_str, _, rest2 = rest.partition("]")
-            parts.append("*" if idx_str == "*" else int(idx_str))
+            idx_str, close, rest2 = rest.partition("]")
+            if not close:
+                raise ValueError(f"unbalanced '[' in path segment {chunk!r}. {_DIALECT}")
+            if idx_str == "*":
+                parts.append("*")
+            else:
+                try:
+                    parts.append(int(idx_str))
+                except ValueError:
+                    raise ValueError(
+                        f"unsupported subscript '[{idx_str}]': no filters, no slices, "
+                        f"no quoted keys. {_DIALECT}"
+                    ) from None
             chunk = rest2
         if chunk:
             parts.append(chunk)

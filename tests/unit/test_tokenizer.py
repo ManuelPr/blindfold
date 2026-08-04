@@ -1,9 +1,12 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from blindfold.core.tokenizer import (
     SchemaField,
     describe_schema,
     tokenize_result,
+    validate_path,
     _resolve_paths,
 )
 from blindfold.core.vault import MemoryTokenStore
@@ -157,3 +160,70 @@ def test_describe_schema_public_from_top_level_module():
     from blindfold import describe_schema as top_level
 
     assert top_level is describe_schema
+
+
+# --- path validation ------------------------------------------------------
+#
+# Unsupported syntax used to be reinterpreted instead of refused: `$..salary`
+# quietly became `$.salary`, matching a top-level field, missing every nested
+# one, and still minting tokens so the config looked correct.
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "$.salary",
+        "$.a.b.c",
+        "$.employees[*].salary",
+        "$.a[*].b[*].c",  # wildcards nest
+        "$.items[0].name",  # integer index
+        "$",  # whole payload
+        "$.a[*]",  # wildcard last
+    ],
+)
+def test_validate_path_accepts_supported_dialect(path):
+    validate_path(path)  # must not raise
+
+
+@pytest.mark.parametrize(
+    "path, expected_in_message",
+    [
+        ("$..salary", "recursive descent"),
+        ("$.a..b", "recursive descent"),
+        ("$.items[?(@.type == 'x')].n", "unsupported subscript"),
+        ("$.items[0:5].n", "unsupported subscript"),
+        ("$.items['name']", "unsupported subscript"),
+        ("$.items[*", "unbalanced"),
+        ("$.a.", "ends with"),
+        ("salary", "must start with '$'"),
+    ],
+)
+def test_validate_path_rejects_unsupported_syntax(path, expected_in_message):
+    with pytest.raises(ValueError) as ei:
+        validate_path(path)
+    assert expected_in_message in str(ei.value)
+
+
+def test_recursive_descent_message_names_what_it_would_have_meant():
+    # The danger is silence, so the error says what the path was being read as.
+    with pytest.raises(ValueError) as ei:
+        validate_path("$..salary")
+    assert "$.salary" in str(ei.value)
+
+
+def test_schema_field_rejects_bad_path_at_construction():
+    # Mode B builds SchemaField directly, without going through the YAML.
+    with pytest.raises(ValueError):
+        SchemaField(path="$..salary", semantic_type="salary")
+
+
+def test_a_path_that_simply_does_not_match_is_still_a_silent_no_op():
+    # Defensive declaration must stay free: "did not match this response" is
+    # not the same as "could never match anything".
+    store = MemoryTokenStore()
+    payload = {"name": "Andrea"}
+    result = tokenize_result(
+        payload, "hr.get", [SchemaField(path="$.absent.deeply")], store, "s", TTL
+    )
+    assert result == payload
+    assert store.find_by_session("s") == []

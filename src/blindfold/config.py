@@ -10,15 +10,24 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
-from blindfold.core.tokenizer import SchemaField
+from blindfold.core.tokenizer import SchemaField, validate_path
 
 
 class SensitiveFieldConfig(BaseModel):
     path: str
     semantic_type: str | None = None
     unit: str | None = None
+
+    @field_validator("path")
+    @classmethod
+    def _reject_unsupported_syntax(cls, path: str) -> str:
+        # At load, not at the first tool call: a config that cannot protect
+        # what it claims should refuse to start, while the mistake is still
+        # in front of whoever made it.
+        validate_path(path)
+        return path
 
 
 class ToolSchemaConfig(BaseModel):
