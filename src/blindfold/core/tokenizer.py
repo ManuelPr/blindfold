@@ -56,6 +56,30 @@ def tokenize_result(
     return result
 
 
+def describe_schema(fields: list[SchemaField]) -> str | None:
+    """Describe what a tool's protected fields *mean*, for the tool's description.
+
+    The model otherwise has only the JSON key name to go on, which is worthless
+    when the upstream API names things `f_42`. This belongs on the tool
+    definition rather than on each result: it is the same text every time, and
+    the model receives tool definitions once instead of once per call.
+
+    Derived purely from config, so it never touches a value. Returns ``None``
+    when the tool declares no sensitive fields.
+    """
+    if not fields:
+        return None
+    lines = []
+    for field in fields:
+        meta = ", ".join(m for m in (field.semantic_type, field.unit) if m)
+        lines.append(f"  {field.path}{f' — {meta}' if meta else ''}")
+    return (
+        "Blindfold: values at these paths come back as ⟦tok_XXXXXXXX⟧ placeholders, "
+        "not real values. You cannot read them — pass a placeholder to "
+        "blindfold_compute to operate on it.\n" + "\n".join(lines)
+    )
+
+
 def _infer_dtype(value: Any) -> str:
     if isinstance(value, bool):
         return "boolean"

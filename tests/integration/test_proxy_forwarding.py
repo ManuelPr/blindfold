@@ -140,3 +140,38 @@ async def test_blindfold_compute_returns_derived_token(proxy_subprocess):
     })
     rehy = await _recv(proc)
     assert rehy["result"]["text"] == "The higher earner is Andrea Tuscano."
+
+
+async def test_protected_tool_description_explains_its_tokens(proxy_subprocess):
+    proc = proxy_subprocess
+    nid = await _initialize(proc, 1)
+    await _send(proc, {"jsonrpc": "2.0", "id": nid, "method": "tools/list", "params": {}})
+    tools = {t["name"]: t for t in (await _recv(proc))["result"]["tools"]}
+
+    described = tools["get_salary"]["description"]
+    assert "Return the annual gross salary in EUR" in described  # upstream text kept
+    assert "$.salary" in described
+    assert "EUR/year" in described
+    assert "blindfold_compute" in described
+
+
+async def test_tool_without_declared_fields_is_left_alone(proxy_subprocess):
+    proc = proxy_subprocess
+    nid = await _initialize(proc, 1)
+    await _send(proc, {"jsonrpc": "2.0", "id": nid, "method": "tools/list", "params": {}})
+    tools = {t["name"]: t for t in (await _recv(proc))["result"]["tools"]}
+
+    assert "Blindfold: values at these paths" not in tools["blindfold_compute"]["description"]
+
+
+async def test_tool_result_carries_no_extra_parts(proxy_subprocess):
+    proc = proxy_subprocess
+    nid = await _initialize(proc, 1)
+    await _send(proc, {
+        "jsonrpc": "2.0", "id": nid, "method": "tools/call",
+        "params": {"name": "get_salary", "arguments": {"name": "Manuel Pernigotto"}},
+    })
+    content = (await _recv(proc))["result"]["content"]
+
+    assert len(content) == 1, "the explanation lives on the tool, not on every result"
+    assert "62000" not in content[0]["text"]

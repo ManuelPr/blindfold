@@ -25,7 +25,7 @@ from typing import Any, BinaryIO
 from blindfold.config import BlindfoldConfig, load_config, schema_fields_for
 from blindfold.core.policy import SessionBoundPolicy
 from blindfold.core.rehydrator import rehydrate
-from blindfold.core.tokenizer import tokenize_result
+from blindfold.core.tokenizer import describe_schema, tokenize_result
 from blindfold.core.vault import MemoryTokenStore
 from blindfold.ports.policy import DetokenizePolicy
 from blindfold.ports.sandbox import ComputeSandbox, SandboxError
@@ -145,6 +145,7 @@ async def _pump_child_to_client(child, write_client, state: ProxyState) -> None:
         if "result" in msg and isinstance(msg["result"], dict):
             tools = msg["result"].get("tools")
             if isinstance(tools, list):
+                _annotate_protected_tools(tools, state)
                 tools.append(build_tool_definition())
 
             msg_id = msg.get("id")
@@ -153,6 +154,21 @@ async def _pump_child_to_client(child, write_client, state: ProxyState) -> None:
                 _tokenize_tool_call_result(msg, tool_name, state)
 
         write_client((json.dumps(msg) + "\n").encode("utf-8"))
+
+
+def _annotate_protected_tools(tools: list, state: ProxyState) -> None:
+    """Tell the model what each tool's tokens mean, once, on the tool itself.
+
+    Cheaper than repeating it on every result: the same text would otherwise be
+    re-sent per call and linger in the transcript for the rest of the session.
+    """
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        note = describe_schema(schema_fields_for(state.config, tool.get("name", "")))
+        if note is None:
+            continue
+        tool["description"] = f"{tool.get('description', '').rstrip()}\n\n{note}".lstrip()
 
 
 def _tokenize_tool_call_result(msg: dict, tool_name: str, state: ProxyState) -> None:

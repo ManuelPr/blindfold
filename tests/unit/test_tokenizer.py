@@ -1,6 +1,11 @@
 from datetime import datetime, timedelta, timezone
 
-from blindfold.core.tokenizer import SchemaField, tokenize_result, _resolve_paths
+from blindfold.core.tokenizer import (
+    SchemaField,
+    describe_schema,
+    tokenize_result,
+    _resolve_paths,
+)
 from blindfold.core.vault import MemoryTokenStore
 
 TTL = datetime.now(tz=timezone.utc) + timedelta(hours=1)
@@ -113,3 +118,42 @@ def test_tokenize_no_fields_still_returns_copy():
     result = tokenize_result(payload, "hr.get_name", [], store, "s", TTL)
     assert result == payload
     assert result is not payload
+
+# --- describe_schema ------------------------------------------------------
+
+
+def test_describe_schema_none_when_no_fields():
+    assert describe_schema([]) is None
+
+
+def test_describe_schema_reports_path_semantic_type_and_unit():
+    note = describe_schema(
+        [SchemaField(path="$.salary", semantic_type="salary", unit="EUR/year")]
+    )
+    assert "$.salary" in note
+    assert "salary" in note
+    assert "EUR/year" in note
+
+
+def test_describe_schema_handles_field_without_metadata():
+    note = describe_schema([SchemaField(path="$.secret")])
+    assert "$.secret" in note
+    assert note.rstrip().endswith("$.secret")
+
+
+def test_describe_schema_is_one_line_per_field():
+    note = describe_schema(
+        [SchemaField(path=f"$.f{i}", semantic_type="x") for i in range(4)]
+    )
+    assert sum(1 for line in note.splitlines() if line.startswith("  ")) == 4
+
+
+def test_describe_schema_mentions_the_compute_tool():
+    note = describe_schema([SchemaField(path="$.salary", semantic_type="salary")])
+    assert "blindfold_compute" in note
+
+
+def test_describe_schema_public_from_top_level_module():
+    from blindfold import describe_schema as top_level
+
+    assert top_level is describe_schema
