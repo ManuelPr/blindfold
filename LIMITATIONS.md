@@ -123,9 +123,7 @@ Everything below is a current-release gap. All of these are fixable and are call
 
 The subprocess sandbox is the one place where real values meet code the model wrote. The entries below were verified by running them, not inferred from the source.
 
-- **Exception text is returned to the model verbatim.** The child formats the exception and the handler forwards the message ([`sandbox/subprocess_.py`](src/blindfold/sandbox/subprocess_.py), [`proxy.py`](src/blindfold/proxy.py)). So `raise ValueError(resolve("⟦tok_…⟧"))` returns `ValueError: 62000` as a tool result. One call, exact value, no cleverness required. Mode B has the same hole wherever a harness formats the exception into `tool_result` — [`examples/demo_chat.py`](examples/demo_chat.py) does.
-
-  **Fix: cheap, and it should be the next thing done.** Return the exception *type* and a fixed message instead of `str(exc)`. Costs the model some debugging signal about its own code; that is the correct trade for a tool whose purpose is not showing values.
+- ~~**Exception text is returned to the model verbatim.**~~ **Closed.** `raise ValueError(resolve("⟦tok_…⟧"))` used to return `ValueError: 62000` as a tool result — one call, exact value. The child now emits exception *type names* only, and child stdout/stderr never reach the caller: they go to the operator's stderr, while the raised `SandboxError` stays generic. Because both modes receive their error text from the sandbox, this closed Mode A and Mode B at once. Six regression tests in [`tests/unit/test_sandbox.py`](tests/unit/test_sandbox.py) cover the paths (explicit raise, failed assertion, interpreter-built messages such as `KeyError`, printed output, user-written stderr) and one asserts that a genuine `NameError` is still named, so the hygiene does not blind the model to its own mistakes.
 
 - **The compute child has full `__builtins__`, so the filesystem is readable.** `open()` and `import` both work; `os.listdir(".")` from inside a compute call returns the working directory. The child is `python -I` with a stripped environment, which removes `site-packages` and inherited variables — not file access.
 

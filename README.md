@@ -253,13 +253,13 @@ Read this before deploying. Honesty here is a feature.
 - **Inference leakage by design decisions you make.** With `consistency: stable`, the model can reason about equality ("this token appears twice → same entity") — that equality relation *is* information disclosed to the provider. It's configurable per semantic type precisely because it's a real trade-off; choose deliberately.
 - **A malicious or prompt-injected model writing exfiltrating compute code.** This is the weakest part of the current release, and the description below is what was actually observed, not what was intended.
 
-  What holds: results leave the sandbox only as new vault tokens, derived tokens inherit their inputs' policies and shortest TTL, and `resolve()` refuses any token not declared in `inputs`.
+  What holds: results leave the sandbox only as new vault tokens, derived tokens inherit their inputs' policies and shortest TTL, `resolve()` refuses any token not declared in `inputs`, and the error channel carries exception *types* only — never messages, never child output.
 
   What does not hold today:
 
   | Channel | Status | Closable? |
   |---|---|---|
-  | Exception text is forwarded to the model — `raise ValueError(resolve(t))` returns the value in one call | **open** | **yes, cheaply** — stop forwarding the exception message, return only its type |
+  | Exception text was forwarded to the model — `raise ValueError(resolve(t))` returned the value in one call | **closed** | done: types only, with six regression tests |
   | `__builtins__` is unrestricted in the child, so `open()` and `import` work; the filesystem is readable | **open** | **yes, cheaply** — restrict builtins and block imports. Raises the bar without being airtight; a determined escape through Python internals stays possible |
   | Network reachable from compute code | **open** on Linux/macOS. On Windows it currently fails, but only as a side effect of the stripped environment breaking socket initialization — an accident, not a defense | **yes**, properly only at OS level: a container with networking off, or equivalent sandboxing |
   | Success-vs-failure as a one-bit oracle — `result = 1/0 if resolve(t) > 50000 else 'ok'`, repeated, recovers an exact number in ~20 calls | **open** | **no**, not while the model submits arbitrary Python. Only a fixed set of operations (the table design above) removes it |
@@ -296,7 +296,7 @@ Read this before deploying. Honesty here is a feature.
 Ordered by what the current release most needs, not by ambition.
 
 - [x] MVP: stdio MCP wrapper, memory store, session-bound policy, subprocess sandbox
-- [ ] **Sandbox output hygiene** — stop returning exception text to the model. Closes the one-call extraction in the threat-model table
+- [x] **Sandbox output hygiene** — exception types only; child stdout/stderr go to the operator, never to the model
 - [ ] **Restricted builtins in the compute child** — removes the easy filesystem and network paths without requiring anyone to install Docker
 - [ ] Export the placeholder-preserving prompt fragment as a package constant
 - [ ] SQLite store, with a decision on TTL policy first — persistence is only worth having if tokens are meant to outlive an hour

@@ -172,9 +172,11 @@ Publicly re-exported as `from blindfold import rehydrate` for harness use.
 6. The user code MUST assign to a variable named `result`; the wrapper serializes `result` to JSON on stdout.
 7. Parent reads stdout, parses the envelope, returns the value.
 
-Every failure path — timeout, non-JSON output, syntax error, unassigned `result`, non-serializable `result`, unlisted-token lookup — surfaces as a single `SandboxError` with an informative message.
+Every failure path — timeout, malformed output, syntax error, unassigned `result`, non-serializable `result`, unlisted-token lookup — surfaces as a single `SandboxError`.
 
-**That last property is currently a leak.** "Informative" means the child's exception text is forwarded to the model, so code like `raise ValueError(resolve("⟦tok_…⟧"))` returns the hidden value as a tool result in one call. Step 2's clean environment is also weaker than it looks: it removes inherited variables and `site-packages`, not file access — the child keeps full `__builtins__`, so `open()` and `import` work. Network access is open on Linux and macOS; on Windows it happens to fail because the stripped environment omits `SystemRoot` and sockets cannot initialize without it, which is an accident rather than a control.
+**That message is a second way out of the sandbox, so it is deliberately uninformative.** It names the exception's *type* and nothing else: `raise ValueError(resolve("⟦tok_…⟧"))` returns `ValueError`, not the value it used to return. Child stdout and stderr never reach the caller either — they are printed to the operator's own stderr, where the model cannot see them. The envelope is also checked for shape rather than just parsed, since a bare `print(62000)` from user code leaves a last line that is valid JSON.
+
+Step 2's clean environment is weaker than it looks: it removes inherited variables and `site-packages`, not file access — the child keeps full `__builtins__`, so `open()` and `import` work. Network access is open on Linux and macOS; on Windows it happens to fail because the stripped environment omits `SystemRoot` and sockets cannot initialize without it, which is an accident rather than a control.
 
 [`LIMITATIONS.md`](../LIMITATIONS.md#sandboxing) has the full list, each entry marked with whether it can be closed and at what cost.
 
