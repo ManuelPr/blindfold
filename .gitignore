@@ -43,3 +43,11 @@ htmlcov/
 # Blindfold local artifacts
 vault.db
 *.blindfold.log
+
+# Knowledge graph — regenerable from source with `graphify update .`
+graphify-out/
+
+# Claude Code local state (machine-specific paths, session locks)
+.claude/settings.json
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
