@@ -107,9 +107,9 @@ Everything below is a current-release gap. All of these are fixable and are call
 
   **Fix:** feasible, but only worth doing with an externally supplied key (environment variable, OS keychain). A key stored beside the database file is decoration. If you are not prepared to make callers manage a key, the honest position is cleartext plus filesystem permissions.
 
-- **Expired records are never actually removed.** `purge_expired()` and `invalidate_cascade()` are implemented and tested, but nothing in the runtime calls either. `get()` filters expired records out, so nothing incorrect is ever returned — but memory grows for the life of the process, and an invalidated token's descendants stay resolvable until you sweep them yourself.
+- ~~**Expired records are never actually removed.**~~ **Closed for expiry**, still open for invalidation. `put()` now sweeps expired records on an interval (60 seconds by default, settable per instance via `purge_interval_s`), so a TTL bounds how long a value *exists* rather than only how long it resolves. The sweep lives in the store rather than in the proxy, because Mode B builds its own store and never goes near the proxy. Consequence of amortizing it: an expired record can outlive its TTL by up to one interval, which is why the interval is settable.
 
-  **Fix:** one call to `purge_expired()` on a timer in the proxy. Small, and worth doing before any long-running deployment.
+  **Still open:** `invalidate_cascade()` is implemented and tested but nothing calls it. Invalidating a token and its descendants remains something your code does deliberately, not something that happens.
 
 - **No concurrency handling on the vault.** `MemoryTokenStore` is a plain dict with no locking.
 

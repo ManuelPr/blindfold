@@ -107,3 +107,65 @@ def test_invalidate_cascade_removes_descendants():
 def test_invalidate_cascade_unknown_token_returns_zero():
     store = MemoryTokenStore()
     assert store.invalidate_cascade("⟦tok_deadbeef⟧") == 0
+
+
+# --- expired values stop existing, not just resolving ----------------------
+#
+# `get` hiding an expired record is not the same as the record being gone: a
+# TTL that only governs resolvability leaves the cleartext value in memory for
+# the life of the process. `put` sweeps on an interval so nothing has to
+# remember to call purge_expired().
+
+
+def test_expired_records_are_swept_without_an_explicit_call():
+    with freeze_time(NOW) as frozen:
+        store = MemoryTokenStore()
+        store.purge_interval_s = 30
+        store.put(_rec("⟦tok_00000001⟧", ttl_min=1))
+
+        frozen.tick(delta=timedelta(minutes=2))
+        assert store.get("⟦tok_00000001⟧") is None  # hidden...
+        assert "⟦tok_00000001⟧" in store._records  # ...but still resident
+
+        store.put(_rec("⟦tok_00000002⟧"))
+        assert "⟦tok_00000001⟧" not in store._records
+
+
+def test_sweep_keeps_live_records():
+    with freeze_time(NOW) as frozen:
+        store = MemoryTokenStore()
+        store.purge_interval_s = 30
+        store.put(_rec("⟦tok_00000001⟧", ttl_min=1))
+        store.put(_rec("⟦tok_00000002⟧", ttl_min=600))
+
+        frozen.tick(delta=timedelta(minutes=2))
+        store.put(_rec("⟦tok_00000003⟧"))
+
+        assert "⟦tok_00000001⟧" not in store._records
+        assert store.get("⟦tok_00000002⟧") is not None
+        assert store.get("⟦tok_00000003⟧") is not None
+
+
+def test_sweep_is_amortized_and_does_not_run_on_every_put():
+    # The cost of the scan is bounded by the interval, so an expired record can
+    # outlive its TTL by up to that much. Deliberate, and the reason the
+    # interval is settable.
+    with freeze_time(NOW) as frozen:
+        store = MemoryTokenStore()
+        store.purge_interval_s = 600
+        store.put(_rec("⟦tok_00000001⟧", ttl_min=1))
+
+        frozen.tick(delta=timedelta(minutes=2))
+        store.put(_rec("⟦tok_00000002⟧"))
+
+        assert "⟦tok_00000001⟧" in store._records
+        assert store.get("⟦tok_00000001⟧") is None  # still never resolves
+
+
+def test_explicit_purge_still_works_alongside_the_sweep():
+    with freeze_time(NOW) as frozen:
+        store = MemoryTokenStore()
+        store.purge_interval_s = 600
+        store.put(_rec("⟦tok_00000001⟧", ttl_min=1))
+        frozen.tick(delta=timedelta(minutes=2))
+        assert store.purge_expired() == 1

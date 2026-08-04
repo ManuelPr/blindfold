@@ -300,6 +300,7 @@ Ordered by what the current release most needs, not by ambition.
 - [x] MVP: stdio MCP wrapper, memory store, session-bound policy, subprocess sandbox
 - [x] **Sandbox output hygiene** — exception types only; child stdout/stderr go to the operator, never to the model
 - [x] **Path validation at config load** — syntax the dialect cannot honor is refused at startup instead of being silently reinterpreted
+- [x] **Expiry frees memory** — the vault sweeps expired records instead of holding cleartext values for the life of the process
 - [x] **Restricted builtins in the compute child** — the easy filesystem and network paths are gone without anyone installing Docker; not a boundary, a higher cost
 - [ ] Export the placeholder-preserving prompt fragment as a package constant
 - [ ] SQLite store, with a decision on TTL policy first — persistence is only worth having if tokens are meant to outlive an hour

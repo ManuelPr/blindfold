@@ -1,6 +1,14 @@
 """MemoryTokenStore — in-memory implementation of TokenStore.
 
 Not thread-safe by design; MVP is single-process, single-session.
+
+Expiry is enforced twice, for two different reasons. `get` hides expired
+records so a stale token never resolves. `put` sweeps them, on an interval, so
+an expired value stops *existing*: a TTL that only governs resolvability would
+leave yesterday's salary sitting in this process's memory in cleartext, and
+short TTLs are the mitigation this project recommends. The sweep lives here
+rather than in the proxy because the in-process library builds its own store
+and never goes near the proxy.
 """
 
 from __future__ import annotations
@@ -14,15 +22,31 @@ from blindfold.ports.token_store import TokenStore
 
 
 class MemoryTokenStore(TokenStore):
+    #: Seconds between sweeps. Set it lower on an instance if a deployment
+    #: wants expired values gone sooner than this.
+    purge_interval_s: float = 60.0
+
     def __init__(self) -> None:
         self._records: dict[str, VaultRecord] = {}
+        self._last_purge = self._now()
 
     @staticmethod
     def mint_token() -> str:
         return f"⟦tok_{secrets.token_hex(4)}⟧"
 
     def put(self, record: VaultRecord) -> None:
+        self._sweep_if_due()
         self._records[record.token] = record
+
+    def _sweep_if_due(self) -> None:
+        # ponytail: linear scan over every record, amortized by the interval.
+        # An expiry-ordered index is the upgrade if a vault ever gets big
+        # enough for the scan to show up.
+        now = self._now()
+        if (now - self._last_purge).total_seconds() < self.purge_interval_s:
+            return
+        self._last_purge = now
+        self.purge_expired(now)
 
     def get(self, token: str) -> VaultRecord | None:
         rec = self._records.get(token)

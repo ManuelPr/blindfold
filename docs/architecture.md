@@ -131,7 +131,9 @@ Small ABCs, one per orthogonal concern. Only one implementation of each ships at
 
 `MemoryTokenStore` — the only `TokenStore` in the MVP. Backed by a plain `dict[str, VaultRecord]`. Lazy TTL expiry on `get`/`resolve`; eager on `purge_expired`. `invalidate_cascade` runs a fixpoint sweep over `lineage.inputs` to remove all descendants of an invalidated token.
 
-**Neither `purge_expired` nor `invalidate_cascade` is called by the runtime today** — they are API surface for your code, not automatic behavior. Expired records are still never *returned* (`get` filters them), but they are never freed either, so the dict grows for the life of the process. Also exposes the static `mint_token()` factory used by tokenizer and compute handler alike: `f"⟦tok_{secrets.token_hex(4)}⟧"` — 8 hex characters between U+27E6 / U+27E7 white square brackets, chosen for collision-proof detection.
+**`put` sweeps expired records on an interval** (`purge_interval_s`, 60 seconds by default), so expiry frees memory instead of only hiding records from `get`. It sits in the store rather than in the proxy so Mode B, which constructs its own store, gets it too. Amortized, so a record can outlive its TTL by up to one interval — set `purge_interval_s` lower if that matters.
+
+**`invalidate_cascade` is still not called by the runtime** — it is API surface for your code, not automatic behavior. Also exposes the static `mint_token()` factory used by tokenizer and compute handler alike: `f"⟦tok_{secrets.token_hex(4)}⟧"` — 8 hex characters between U+27E6 / U+27E7 white square brackets, chosen for collision-proof detection.
 
 ### Policy — [`src/blindfold/core/policy.py`](../src/blindfold/core/policy.py)
 
