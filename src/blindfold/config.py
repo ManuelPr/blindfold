@@ -70,20 +70,6 @@ class StorageConfig(BaseModel):
             f"{', '.join(_IMPLEMENTED_BACKENDS)}."
         )
 
-    @field_validator("encrypt_at_rest")
-    @classmethod
-    def _refuse_to_pretend(cls, requested: bool) -> bool:
-        # Silently ignoring this would be the worst option available: the
-        # config would say the vault is encrypted and the file would hold
-        # cleartext. Refuse until there is something to honor it with.
-        if requested:
-            raise ValueError(
-                "encrypt_at_rest is not implemented — the vault file holds cleartext "
-                "values. Remove the key to acknowledge that, and protect the file with "
-                "filesystem permissions. See LIMITATIONS.md#storage."
-            )
-        return requested
-
 
 class BlindfoldConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
@@ -142,7 +128,17 @@ def build_token_store(config: BlindfoldConfig) -> TokenStore:
     if config.storage.backend == "sqlite":
         from blindfold.core.sqlite_store import SQLiteTokenStore
 
-        return SQLiteTokenStore(config.storage.path)
+        return SQLiteTokenStore(
+            config.storage.path, encrypt=config.storage.encrypt_at_rest
+        )
+
+    if config.storage.encrypt_at_rest:
+        # There is no "at rest" to encrypt, so honouring the key would be
+        # theatre and ignoring it would be a lie.
+        raise ValueError(
+            "encrypt_at_rest has no meaning with backend: memory — values live in "
+            "process memory, not on disk. Use backend: sqlite, or drop the key."
+        )
 
     from blindfold.core.vault import MemoryTokenStore
 

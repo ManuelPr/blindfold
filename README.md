@@ -208,6 +208,7 @@ tokens:
 storage:
   backend: memory           # memory (default) | sqlite
   path: ./vault.db          # sqlite only
+  encrypt_at_rest: false    # sqlite only; needs BLINDFOLD_VAULT_KEY
 
 schemas:
   hr_api.get_salary:
@@ -219,9 +220,21 @@ schemas:
 
 Pick `sqlite` when the vault has to outlive the process, or when tokenizing and
 rehydrating happen in different processes. Pick `memory` — the default — when
-neither is true: it is faster and puts nothing on disk. Asking for a backend
-this release does not have, or for `encrypt_at_rest: true`, fails at load
-rather than being ignored.
+neither is true: it is faster and puts nothing on disk. Asking for a backend this release does not have fails at load rather than
+being ignored.
+
+`encrypt_at_rest: true` seals values with AES-256-GCM. The key comes from
+`BLINDFOLD_VAULT_KEY` (32 bytes, base64) and never from the config file, since a
+key kept beside the database it protects is decoration. Install with
+`pip install blindfold[encryption]`, and generate a key with:
+
+```bash
+python -c "import base64,os; print(base64.b64encode(os.urandom(32)).decode())"
+```
+
+Only the value is sealed; token, session and timestamps stay readable because
+the store queries on them. Holding the file still reveals how many records
+exist and when.
 
 `default_ttl` deserves a thought before you deploy: it governs how long a conversation containing placeholders stays readable. At the default of one hour, an answer the user comes back to tomorrow rehydrates as `[unknown token]` — the placeholders in your chat history outlive the vault entries they point at. Raise it if that matters to you; the vault is in memory, so a restart ends the session either way.
 
@@ -340,7 +353,8 @@ Ordered by what the current release most needs, not by ambition.
 - [x] **SQLite store** — a vault that survives a restart and can be shared between processes
 - [x] **Claude Code hooks** — tokenization and reveal without a proxy, and without placeholders reaching the user
 - [x] **Mode C completed** — session briefing so the model knows what the placeholders are, and an MCP server so it can compute on them
-- [ ] Encryption at rest, now that there is a file to encrypt and still no good answer for where the key lives
+- [x] **Encryption at rest** — AES-256-GCM, key from the environment, never from the config file
+- [x] **CI on Linux, macOS and Windows** — including the sandbox probes, so the documented behaviour is asserted per platform
 - [x] **Restricted builtins in the compute child** — the easy filesystem and network paths are gone without anyone installing Docker; not a boundary, a higher cost
 - [ ] Export the placeholder-preserving prompt fragment as a package constant
 - [ ] Collective (table) tokens + analytical compute over a fixed operation set — also the only thing that closes the one-bit oracle

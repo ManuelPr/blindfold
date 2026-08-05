@@ -227,3 +227,118 @@ def test_sqlite_survives_concurrent_use_from_threads(tmp_path):
         assert len(store.find_by_session("s")) == 100
     finally:
         store.close()
+
+
+# --- encryption at rest ----------------------------------------------------
+#
+# The whole question was where the key lives. It comes from outside the file,
+# and there is deliberately no way to keep it beside the database.
+
+import base64
+import os
+
+from blindfold.core.sqlite_store import VaultKeyError
+
+KEY = base64.b64encode(bytes(range(32))).decode()
+
+
+@freeze_time(NOW)
+def test_encrypted_values_round_trip(tmp_path, monkeypatch):
+    monkeypatch.setenv("BLINDFOLD_VAULT_KEY", KEY)
+    store = SQLiteTokenStore(tmp_path / "vault.db", encrypt=True)
+    try:
+        store.put(_rec("⟦tok_00000001⟧", value={"iban": "IT60X0542811101000000123456"}))
+        assert store.resolve("⟦tok_00000001⟧") == {"iban": "IT60X0542811101000000123456"}
+    finally:
+        store.close()
+
+
+@freeze_time(NOW)
+def test_the_value_is_not_in_the_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("BLINDFOLD_VAULT_KEY", KEY)
+    path = tmp_path / "vault.db"
+    store = SQLiteTokenStore(path, encrypt=True)
+    try:
+        store.put(_rec("⟦tok_00000001⟧", value="IT60X0542811101000000123456"))
+    finally:
+        store.close()
+    assert b"IT60X0542811101000000123456" not in path.read_bytes()
+
+
+@freeze_time(NOW)
+def test_a_cleartext_store_does_leave_the_value_in_the_file(tmp_path):
+    # The contrast is the point: without encryption the file is the secret.
+    path = tmp_path / "vault.db"
+    store = SQLiteTokenStore(path)
+    try:
+        store.put(_rec("⟦tok_00000001⟧", value="IT60X0542811101000000123456"))
+    finally:
+        store.close()
+    assert b"IT60X0542811101000000123456" in path.read_bytes()
+
+
+@freeze_time(NOW)
+def test_the_wrong_key_does_not_silently_return_garbage(tmp_path, monkeypatch):
+    path = tmp_path / "vault.db"
+    monkeypatch.setenv("BLINDFOLD_VAULT_KEY", KEY)
+    writer = SQLiteTokenStore(path, encrypt=True)
+    writer.put(_rec("⟦tok_00000001⟧", value=71000))
+    writer.close()
+
+    monkeypatch.setenv("BLINDFOLD_VAULT_KEY", base64.b64encode(bytes(32)).decode())
+    reader = SQLiteTokenStore(path, encrypt=True)
+    try:
+        with pytest.raises(VaultKeyError, match="would not open"):
+            reader.resolve("⟦tok_00000001⟧")
+    finally:
+        reader.close()
+
+
+@freeze_time(NOW)
+def test_a_ciphertext_cannot_be_moved_to_another_row(tmp_path, monkeypatch):
+    # The token is the associated data, so a stolen row does not open elsewhere.
+    monkeypatch.setenv("BLINDFOLD_VAULT_KEY", KEY)
+    path = tmp_path / "vault.db"
+    store = SQLiteTokenStore(path, encrypt=True)
+    try:
+        store.put(_rec("⟦tok_00000001⟧", value="secret"))
+        store.put(_rec("⟦tok_00000002⟧", value="other"))
+        stolen = store._conn.execute(
+            "SELECT value FROM records WHERE token = '⟦tok_00000001⟧'"
+        ).fetchone()["value"]
+        store._conn.execute(
+            "UPDATE records SET value = ? WHERE token = '⟦tok_00000002⟧'", (stolen,)
+        )
+        with pytest.raises(VaultKeyError):
+            store.resolve("⟦tok_00000002⟧")
+    finally:
+        store.close()
+
+
+def test_opening_a_cleartext_file_with_encryption_on_is_refused(tmp_path, monkeypatch):
+    path = tmp_path / "vault.db"
+    SQLiteTokenStore(path).close()
+    monkeypatch.setenv("BLINDFOLD_VAULT_KEY", KEY)
+    with pytest.raises(VaultKeyError, match="written cleartext"):
+        SQLiteTokenStore(path, encrypt=True)
+
+
+def test_opening_an_encrypted_file_without_the_key_is_refused(tmp_path, monkeypatch):
+    path = tmp_path / "vault.db"
+    monkeypatch.setenv("BLINDFOLD_VAULT_KEY", KEY)
+    SQLiteTokenStore(path, encrypt=True).close()
+    with pytest.raises(VaultKeyError, match="written encrypted"):
+        SQLiteTokenStore(path)
+
+
+def test_a_missing_key_says_how_to_make_one(tmp_path, monkeypatch):
+    monkeypatch.delenv("BLINDFOLD_VAULT_KEY", raising=False)
+    with pytest.raises(VaultKeyError) as ei:
+        SQLiteTokenStore(tmp_path / "vault.db", encrypt=True)
+    assert "base64" in str(ei.value)
+    assert "next to the vault" in str(ei.value)
+
+
+def test_a_key_of_the_wrong_length_is_refused(tmp_path):
+    with pytest.raises(VaultKeyError, match="32 bytes"):
+        SQLiteTokenStore(tmp_path / "vault.db", encrypt=True, key=b"too short")

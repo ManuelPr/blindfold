@@ -14,7 +14,13 @@ tokens:
 storage:
   # memory (default) loses everything when the process ends. Choose sqlite when
   # the vault must outlive a restart, or when tokenizing and rehydrating happen
-  # in different processes. The file holds cleartext values: protect it with
-  # filesystem permissions.
+  # in different processes. Without encrypt_at_rest below, the file holds
+  # cleartext values: protect it with filesystem permissions.
   backend: memory
   # path: ./vault.db
+
+  # Seals values with AES-256-GCM. sqlite only. The key comes from
+  # BLINDFOLD_VAULT_KEY (32 bytes, base64) and never from this file — a key
+  # kept beside the database it protects is decoration. Needs the optional
+  # extra: pip install blindfold[encryption]
+  # encrypt_at_rest: false

@@ -108,11 +108,13 @@ Everything below is a current-release gap. All of these are fixable and are call
 
   **Fix:** none needed in code — raise `default_ttl` if long-lived conversations matter to you. What is worth building is a clearer signal than `[unknown token]` for the expiry case, so users are not left staring at an unexplained placeholder.
 
-- **No encryption at rest — and now there is something at rest.** With `backend: sqlite` the vault file holds every protected value in cleartext. This is the most consequential open item in this document: an in-memory vault needed access to a running process, a file needs read access to a file. The store narrows permissions to owner-only where the platform honors it (POSIX; Windows ignores the mode bits) and that is the whole of its protection. Treat the file as the secret it contains, and prefer `backend: memory` when nothing needs to survive the session.
+- ~~**No encryption at rest.**~~ **Closed, with a condition.** `encrypt_at_rest: true` seals every value with AES-256-GCM before it is written, and the key must come from outside the file — `BLINDFOLD_VAULT_KEY`, 32 bytes base64, or passed to the store directly. There is deliberately no way to keep the key beside the database, because that is decoration rather than encryption. Needs the optional extra: `pip install blindfold[encryption]`.
 
-  `encrypt_at_rest: true` is **refused at load** rather than ignored, so a config cannot claim a guarantee the release does not have.
+  What it does not hide: only the value is sealed. Token, session, timestamps and lineage stay readable, because they are what the store queries on and none of them is the secret. Holding the file still tells you **how many** records exist, **when**, and **in which session** — shape, not content.
 
-  **Fix:** feasible, but only worth doing with an externally supplied key (environment variable, OS keychain). A key stored beside the database file is decoration. If you are not prepared to make callers manage a key, the honest position is cleartext plus filesystem permissions — which is where this stands.
+  Guardrails, because a mistake here is silent by nature: the token is the AEAD associated data, so a ciphertext moved to another row will not open; a wrong key raises rather than returning garbage; and a file written cleartext cannot be opened encrypted or the reverse — the store records which it is and refuses the mismatch instead of failing later at the first read.
+
+  **Still true:** `backend: memory` remains the default, and with no encryption the vault file is the secret it contains. `encrypt_at_rest` with `backend: memory` is refused rather than ignored — there is no "at rest" there to encrypt.
 
 - ~~**Expired records are never actually removed.**~~ **Closed for expiry**, still open for invalidation. `put()` now sweeps expired records on an interval (60 seconds by default, settable per instance via `purge_interval_s`), so a TTL bounds how long a value *exists* rather than only how long it resolves. The sweep lives in the store rather than in the proxy, because Mode B builds its own store and never goes near the proxy. Consequence of amortizing it: an expired record can outlive its TTL by up to one interval, which is why the interval is settable.
 

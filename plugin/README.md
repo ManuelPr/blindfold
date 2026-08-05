@@ -43,7 +43,8 @@ guessed: a field you did not declare passes through in cleartext.
 # blindfold.yaml
 storage:
   backend: sqlite
-  path: ./vault.db          # holds cleartext values — see LIMITATIONS.md#storage
+  path: ./vault.db
+  # encrypt_at_rest: true   # needs BLINDFOLD_VAULT_KEY in every hook's env
 
 tokens:
   default_ttl: 3600
@@ -87,8 +88,11 @@ contain `⟦tok_…⟧`.
   connection carries no session identity, so the server reads the session off
   the input tokens and refuses to mix two. Possession of a token is therefore
   treated as proof of belonging to its session.
-- **The vault file holds cleartext.** Encryption at rest is not implemented.
-  Protect the file with filesystem permissions and keep TTLs short.
+- **The vault file holds cleartext unless you turn encryption on.** Set
+  `encrypt_at_rest: true` and export `BLINDFOLD_VAULT_KEY` (32 bytes, base64;
+  `pip install blindfold[encryption]`). Every hook process and the MCP server
+  need that variable in their environment. Without it, protect the file with
+  filesystem permissions and keep TTLs short.
 - **`MessageDisplay` fires on every assistant message** with a 10-second budget;
   the hook returns immediately when the text contains no placeholders.
 

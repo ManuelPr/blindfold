@@ -1,3 +1,5 @@
+import base64
+import os
 from pathlib import Path
 
 import pytest
@@ -14,7 +16,7 @@ from blindfold.config import (
     schema_fields_for,
 )
 from blindfold.core.rehydrator import PLACEHOLDER_PROMPT
-from blindfold.core.sqlite_store import SQLiteTokenStore
+from blindfold.core.sqlite_store import SQLiteTokenStore, VaultKeyError
 from blindfold.core.tokenizer import SchemaField
 from blindfold.core.vault import MemoryTokenStore
 
@@ -187,13 +189,40 @@ def test_unknown_backend_is_refused(tmp_path: Path):
     assert "unknown storage backend" in str(ei.value)
 
 
-def test_encrypt_at_rest_is_refused_rather_than_ignored(tmp_path: Path):
-    # The worst available behaviour would be to accept this silently: the
-    # config would claim encryption and the file would hold cleartext.
-    with pytest.raises(ValidationError) as ei:
-        load_config(_write(tmp_path, "storage:\n  backend: sqlite\n  encrypt_at_rest: true\n"))
-    assert "not implemented" in str(ei.value)
-    assert "cleartext" in str(ei.value)
+def test_encrypt_at_rest_without_a_key_refuses_to_build_a_store(tmp_path: Path, monkeypatch):
+    # The config parses; the store refuses to open. Accepting it silently would
+    # give a config that claims encryption over a cleartext file.
+    monkeypatch.delenv("BLINDFOLD_VAULT_KEY", raising=False)
+    cfg = load_config(
+        _write(
+            tmp_path,
+            f"storage:\n  backend: sqlite\n  path: {tmp_path / 'v.db'}\n  encrypt_at_rest: true\n",
+        )
+    )
+    with pytest.raises(VaultKeyError) as ei:
+        build_token_store(cfg)
+    assert "BLINDFOLD_VAULT_KEY" in str(ei.value)
+
+
+def test_encrypt_at_rest_is_meaningless_in_memory(tmp_path: Path):
+    cfg = load_config(_write(tmp_path, "storage:\n  backend: memory\n  encrypt_at_rest: true\n"))
+    with pytest.raises(ValueError, match="no meaning with backend: memory"):
+        build_token_store(cfg)
+
+
+def test_encrypt_at_rest_with_a_key_builds_an_encrypting_store(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("BLINDFOLD_VAULT_KEY", base64.b64encode(os.urandom(32)).decode())
+    cfg = load_config(
+        _write(
+            tmp_path,
+            f"storage:\n  backend: sqlite\n  path: {tmp_path / 'v.db'}\n  encrypt_at_rest: true\n",
+        )
+    )
+    store = build_token_store(cfg)
+    try:
+        assert store._cipher is not None
+    finally:
+        store.close()
 
 
 # --- the session briefing and the shipped prompt fragment ------------------

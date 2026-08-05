@@ -12,17 +12,26 @@ Host integrations need it because tokenizing and rehydrating can happen in
 invocation — the token minted while a tool result is rewritten has to still
 resolve when the answer is displayed, seconds later, from somewhere else.
 
-**The file holds cleartext values.** There is no encryption at rest here; see
-LIMITATIONS.md#storage for why a key stored beside the database would be
-decoration. The store narrows the file's permissions where the platform
-supports it, and that is the whole of its protection. Treat the file as the
-secret it contains.
+**Values are cleartext unless you ask for encryption and supply a key.** With
+``encrypt=True`` each value is sealed with AES-256-GCM before it is written,
+and the key must come from outside the file — ``BLINDFOLD_VAULT_KEY`` in the
+environment, or passed in. There is deliberately no way to keep the key beside
+the database, because that is decoration rather than encryption. Without
+encryption the store narrows the file's permissions where the platform
+supports it, and that is the whole of its protection.
 
-Uses `sqlite3` from the standard library — no new dependency.
+Only the value is sealed. The token, session and lineage stay readable: they
+are what the store queries on, and none of them is the secret. That does leak
+shape — how many records exist, when, and in which session — to anyone holding
+the file.
+
+Uses `sqlite3` from the standard library. Encryption needs `cryptography`,
+which is an optional extra: `pip install blindfold[encryption]`.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import sqlite3
@@ -50,15 +59,51 @@ CREATE TABLE IF NOT EXISTS records (
 );
 CREATE INDEX IF NOT EXISTS idx_records_session ON records(session_id);
 CREATE INDEX IF NOT EXISTS idx_records_ttl ON records(ttl_epoch);
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
+
+_KEY_ENV = "BLINDFOLD_VAULT_KEY"
+
+
+class VaultKeyError(RuntimeError):
+    """Encryption was asked for and the key could not be used."""
+
+
+def _load_cipher(key: bytes | None):
+    """An AES-256-GCM cipher, or a refusal that says what to do about it."""
+    if key is None:
+        raw = os.environ.get(_KEY_ENV)
+        if not raw:
+            raise VaultKeyError(
+                f"encrypt_at_rest needs a key in ${_KEY_ENV}: 32 bytes, base64. "
+                f"Generate one with:  python -c \"import base64,os; "
+                f"print(base64.b64encode(os.urandom(32)).decode())\"  — and keep it "
+                f"somewhere other than next to the vault file, or it protects nothing."
+            )
+        try:
+            key = base64.b64decode(raw, validate=True)
+        except Exception as exc:
+            raise VaultKeyError(f"${_KEY_ENV} is not valid base64") from exc
+    if len(key) != 32:
+        raise VaultKeyError(f"vault key must be 32 bytes, got {len(key)}")
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    except ImportError as exc:  # pragma: no cover - depends on the install
+        raise VaultKeyError(
+            "encryption needs the `cryptography` package: pip install blindfold[encryption]"
+        ) from exc
+    return AESGCM(key)
 
 
 class SQLiteTokenStore(TokenStore):
     #: Seconds between expiry sweeps, as in MemoryTokenStore.
     purge_interval_s: float = 60.0
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(
+        self, path: str | Path, *, encrypt: bool = False, key: bytes | None = None
+    ) -> None:
         self._path = Path(path)
+        self._cipher = _load_cipher(key) if encrypt else None
         self._path.parent.mkdir(parents=True, exist_ok=True)
         # isolation_level=None: autocommit. Every method here is a single
         # statement or an explicit transaction, and a vault that loses the last
@@ -79,6 +124,7 @@ class SQLiteTokenStore(TokenStore):
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
         self._restrict_permissions()
+        self._check_encryption_matches_file()
         self._last_purge = self._now()
 
     # --- TokenStore -------------------------------------------------------
@@ -96,7 +142,7 @@ class SQLiteTokenStore(TokenStore):
             "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (
                 record.token,
-                json.dumps(record.value),
+                self._seal(record.token, record.value),
                 record.dtype,
                 record.semantic_type,
                 record.unit,
@@ -128,7 +174,7 @@ class SQLiteTokenStore(TokenStore):
                 "SELECT * FROM records WHERE token = ? AND ttl_epoch > ?",
                 (token, self._now().timestamp()),
             ).fetchone()
-        return _from_row(row) if row is not None else None
+        return self._from_row(row) if row is not None else None
 
     def resolve(self, token: str) -> Any | None:
         record = self.get(token)
@@ -140,7 +186,7 @@ class SQLiteTokenStore(TokenStore):
                 "SELECT * FROM records WHERE session_id = ? AND ttl_epoch > ?",
                 (session_id, self._now().timestamp()),
             ).fetchall()
-        return [_from_row(r) for r in rows]
+        return [self._from_row(r) for r in rows]
 
     def invalidate_cascade(self, token: str) -> int:
         with self._lock:
@@ -196,6 +242,47 @@ class SQLiteTokenStore(TokenStore):
         self._last_purge = now
         self.purge_expired(now)
 
+    def _seal(self, token: str, value: Any) -> str:
+        plain = json.dumps(value).encode("utf-8")
+        if self._cipher is None:
+            return plain.decode("utf-8")
+        nonce = os.urandom(12)
+        # The token is the associated data, so a ciphertext cannot be moved to
+        # another row and still open.
+        sealed = self._cipher.encrypt(nonce, plain, token.encode("utf-8"))
+        return base64.b64encode(nonce + sealed).decode("ascii")
+
+    def _open(self, token: str, stored: str) -> Any:
+        if self._cipher is None:
+            return json.loads(stored)
+        blob = base64.b64decode(stored)
+        try:
+            plain = self._cipher.decrypt(blob[:12], blob[12:], token.encode("utf-8"))
+        except Exception as exc:
+            raise VaultKeyError(
+                "a vault record would not open with this key — wrong key, or the "
+                "file was tampered with"
+            ) from exc
+        return json.loads(plain)
+
+    def _check_encryption_matches_file(self) -> None:
+        """Refuse a key/file mismatch instead of failing at the first read."""
+        want = "1" if self._cipher is not None else "0"
+        row = self._conn.execute(
+            "SELECT value FROM meta WHERE key = 'encrypted'"
+        ).fetchone()
+        if row is None:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('encrypted', ?)", (want,)
+            )
+            return
+        if row["value"] != want:
+            was, now = ("encrypted", "cleartext") if row["value"] == "1" else ("cleartext", "encrypted")
+            raise VaultKeyError(
+                f"{self._path} was written {was} and is being opened {now}. "
+                f"Blindfold will not mix the two in one file."
+            )
+
     def _restrict_permissions(self) -> None:
         # Owner-only on POSIX. Windows ignores the mode bits, which is why this
         # is documented as "narrows where supported" rather than as protection.
@@ -204,17 +291,20 @@ class SQLiteTokenStore(TokenStore):
         except OSError:
             pass
 
+    def _from_row(self, row: sqlite3.Row) -> VaultRecord:
+        return _from_row_with(self._open, row)
+
     @staticmethod
     def _now() -> datetime:
         return datetime.now(tz=timezone.utc)
 
 
-def _from_row(row: sqlite3.Row) -> VaultRecord:
+def _from_row_with(open_value, row: sqlite3.Row) -> VaultRecord:
     lineage = json.loads(row["lineage"])
     policy = json.loads(row["policy"])
     return VaultRecord(
         token=row["token"],
-        value=json.loads(row["value"]),
+        value=open_value(row["token"], row["value"]),
         dtype=row["dtype"],
         semantic_type=row["semantic_type"],
         unit=row["unit"],

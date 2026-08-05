@@ -15,6 +15,9 @@ dependencies = [
 demo = [
     "anthropic>=0.30",
 ]
+encryption = [
+    "cryptography>=42",
+]
 
 [project.scripts]
 blindfold = "blindfold.cli:main"
