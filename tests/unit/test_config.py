@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from blindfold.config import (
     build_token_store,
+    describe_config,
     BlindfoldConfig,
     SensitiveFieldConfig,
     ToolSchemaConfig,
@@ -12,6 +13,7 @@ from blindfold.config import (
     load_config,
     schema_fields_for,
 )
+from blindfold.core.rehydrator import PLACEHOLDER_PROMPT
 from blindfold.core.sqlite_store import SQLiteTokenStore
 from blindfold.core.tokenizer import SchemaField
 from blindfold.core.vault import MemoryTokenStore
@@ -192,3 +194,47 @@ def test_encrypt_at_rest_is_refused_rather_than_ignored(tmp_path: Path):
         load_config(_write(tmp_path, "storage:\n  backend: sqlite\n  encrypt_at_rest: true\n"))
     assert "not implemented" in str(ei.value)
     assert "cleartext" in str(ei.value)
+
+
+# --- the session briefing and the shipped prompt fragment ------------------
+
+
+def test_describe_config_lists_every_tool_and_path():
+    cfg = BlindfoldConfig(
+        schemas={
+            "hr.get_salary": ToolSchemaConfig(
+                sensitive_fields=[
+                    SensitiveFieldConfig(path="$.salary", semantic_type="salary", unit="EUR/year")
+                ]
+            ),
+            "hr.get_iban": ToolSchemaConfig(
+                sensitive_fields=[SensitiveFieldConfig(path="$.iban", semantic_type="iban")]
+            ),
+        }
+    )
+    brief = describe_config(cfg)
+    for expected in ("hr.get_salary", "$.salary", "EUR/year", "hr.get_iban", "$.iban"):
+        assert expected in brief
+
+
+def test_describe_config_carries_the_shipped_prompt_fragment():
+    # One source of truth: the instruction that keeps rehydration working must
+    # not drift between the constant and the briefing.
+    cfg = BlindfoldConfig(
+        schemas={"t": ToolSchemaConfig(sensitive_fields=[SensitiveFieldConfig(path="$.x")])}
+    )
+    assert PLACEHOLDER_PROMPT in describe_config(cfg)
+
+
+def test_describe_config_is_none_without_declarations():
+    assert describe_config(BlindfoldConfig()) is None
+
+
+def test_prompt_fragment_is_importable_from_the_package_root():
+    from blindfold import PLACEHOLDER_PROMPT as top_level
+    from blindfold import describe_config as top_level_fn
+
+    assert top_level is PLACEHOLDER_PROMPT
+    assert top_level_fn is describe_config
+    assert "VERBATIM" in top_level
+    assert "blindfold_compute" in top_level

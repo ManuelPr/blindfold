@@ -13,6 +13,24 @@ from blindfold.ports.token_store import TokenStore
 
 TOKEN_PATTERN = re.compile(r"⟦tok_[0-9a-f]{8}⟧")
 
+PLACEHOLDER_PROMPT = (
+    "Some tool results in this conversation come back as ⟦tok_XXXXXXXX⟧ placeholders "
+    "instead of real values. You cannot read them, and guessing at them is always wrong.\n\n"
+    "To compare, sort, aggregate or otherwise derive from them, call the `blindfold_compute` "
+    "tool and pass every placeholder your code resolves in its `inputs` array. It returns a "
+    "new placeholder, never a value.\n\n"
+    "Reproduce placeholders VERBATIM in your answers — never invent, alter, shorten or "
+    "paraphrase them. The real values are put back in their place after you are done; a "
+    "mangled placeholder shows the user nothing."
+)
+"""Instruction the model needs for rehydration to survive its answer.
+
+`rehydrate` can only replace placeholders the model reproduced exactly. This
+lived in an example for a while, which meant every integration had to know to
+go and copy it. Add it to your system prompt in Mode A and Mode B; Mode C sends
+it in the `SessionStart` briefing.
+"""
+
 
 def rehydrate(
     text: str,

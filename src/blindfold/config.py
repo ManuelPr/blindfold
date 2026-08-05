@@ -16,6 +16,7 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from blindfold.core.rehydrator import PLACEHOLDER_PROMPT
 from blindfold.core.tokenizer import SchemaField, validate_path
 from blindfold.ports.token_store import TokenStore
 
@@ -97,6 +98,39 @@ def load_config(path: Path | str) -> BlindfoldConfig:
         return BlindfoldConfig()
     data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
     return BlindfoldConfig.model_validate(data)
+
+
+def describe_config(config: BlindfoldConfig) -> str | None:
+    """The whole session's protected paths, in one briefing.
+
+    Mode A can edit tool descriptions on their way past the proxy. Nothing in
+    a host's hook system can — tool definitions are not rewritable — so the
+    same information has to arrive as session context instead: once, at the
+    start, before the first prompt.
+
+    It carries ``PLACEHOLDER_PROMPT`` too, because a host gives us no system
+    prompt to put that rule in. Mode B can use this instead of appending
+    ``describe_schema`` per tool, if one up-front briefing suits its loop
+    better.
+    """
+    lines = []
+    for tool_name in sorted(config.schemas):
+        fields = schema_fields_for(config, tool_name)
+        if not fields:
+            continue
+        lines.append(f"  {tool_name}")
+        for field in fields:
+            meta = ", ".join(m for m in (field.semantic_type, field.unit) if m)
+            lines.append(f"    {field.path}{f' — {meta}' if meta else ''}")
+    if not lines:
+        return None
+    return (
+        "Blindfold is protecting some of this session's tool results.\n\n"
+        + PLACEHOLDER_PROMPT
+        + "\n\n(In a host, the compute tool may appear as "
+        "`mcp__blindfold__blindfold_compute`.)\n\n"
+        "Protected paths:\n" + "\n".join(lines)
+    )
 
 
 def build_token_store(config: BlindfoldConfig) -> TokenStore:

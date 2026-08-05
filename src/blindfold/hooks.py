@@ -1,8 +1,11 @@
 """Claude Code hook handlers — Blindfold without a proxy.
 
-The host offers exactly the two seams this project needs, and they fit better
-than the proxy does:
+A host offers different seams than a protocol does, and on balance better ones:
 
+- ``SessionStart`` can inject context before the first prompt
+  (``additionalContext``). That carries ``describe_config`` — what the
+  placeholders mean and how to operate on them. It exists because **no hook can
+  edit a tool description**, which is where Mode A puts the same information.
 - ``PostToolUse`` can rewrite the tool result *the model receives*
   (``updatedToolOutput``). That is tokenization, and unlike the proxy it covers
   every tool, not only stdio MCP servers: ``Bash``, ``Read`` and ``WebFetch``
@@ -13,8 +16,13 @@ than the proxy does:
   while the conversation keeps the placeholders, so the values never re-enter
   the model's context on the next turn. The proxy cannot make that distinction.
 
-Both handlers are pure functions of their event: they take the parsed hook
-input and return the JSON to print, or ``None`` for "change nothing".
+The fourth piece is not a hook at all: **no hook can add a tool**, so
+``blindfold_compute`` arrives as its own MCP server — see
+:mod:`blindfold.mcp_server`. Without it the model can read placeholders and do
+nothing with them.
+
+Every handler is a pure function of its event: it takes the parsed hook input
+and returns the JSON to print, or ``None`` for "change nothing".
 
 Two properties this module has to hold:
 
@@ -38,7 +46,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from blindfold.config import BlindfoldConfig, schema_fields_for
+from blindfold.config import BlindfoldConfig, describe_config, schema_fields_for
 from blindfold.core.rehydrator import TOKEN_PATTERN, rehydrate
 from blindfold.core.tokenizer import tokenize_result
 from blindfold.ports.policy import DetokenizePolicy
@@ -48,46 +56,6 @@ POST_TOOL_USE = "post-tool-use"
 MESSAGE_DISPLAY = "message-display"
 SESSION_START = "session-start"
 EVENTS = (POST_TOOL_USE, MESSAGE_DISPLAY, SESSION_START)
-
-
-def describe_config(config: BlindfoldConfig) -> str | None:
-    """The whole session's protected paths, in one briefing.
-
-    Mode A can edit tool descriptions on their way past the proxy. Nothing in
-    a host's hook system can — tool definitions are not rewritable — so the
-    same information has to arrive as session context instead: once, at the
-    start, before the first prompt.
-
-    It carries the placeholder-preservation instruction too. A model that
-    paraphrases ``⟦tok_7f3a1b2c⟧`` breaks rehydration, and in this mode there
-    is no system prompt of ours to put that rule in.
-    """
-    lines = []
-    for tool_name in sorted(config.schemas):
-        fields = schema_fields_for(config, tool_name)
-        if not fields:
-            continue
-        lines.append(f"  {tool_name}")
-        for field in fields:
-            meta = ", ".join(m for m in (field.semantic_type, field.unit) if m)
-            lines.append(f"    {field.path}{f' — {meta}' if meta else ''}")
-    if not lines:
-        return None
-    return (
-        "Blindfold is protecting some of this session's tool results.\n\n"
-        "Values at the paths listed below come back as ⟦tok_XXXXXXXX⟧ placeholders "
-        "instead of real values. You cannot read them, and guessing at them is "
-        "always wrong.\n\n"
-        "To compare, sort, aggregate or otherwise derive from them, call the "
-        "`blindfold_compute` tool (it may appear as `mcp__blindfold__blindfold_compute`). "
-        "Pass every placeholder your code resolves in its `inputs` array; it returns a "
-        "new placeholder, never a value.\n\n"
-        "Reproduce placeholders VERBATIM in your answers — never invent, alter, "
-        "shorten or paraphrase them. The user's screen shows the real values in "
-        "their place; you never see them, and a mangled placeholder shows the user "
-        "nothing.\n\n"
-        "Protected paths:\n" + "\n".join(lines)
-    )
 
 
 def handle_session_start(event: dict, *, config: BlindfoldConfig) -> dict | None:

@@ -20,7 +20,7 @@ from anthropic import Anthropic
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from blindfold import rehydrate
+from blindfold import PLACEHOLDER_PROMPT, rehydrate
 from blindfold.config import (
     BlindfoldConfig,
     SensitiveFieldConfig,
@@ -28,7 +28,7 @@ from blindfold.config import (
     schema_fields_for,
 )
 from blindfold.core.policy import SessionBoundPolicy
-from blindfold.core.tokenizer import tokenize_result
+from blindfold.core.tokenizer import describe_schema, tokenize_result
 from blindfold.core.vault import MemoryTokenStore
 from blindfold.sandbox.subprocess_ import SubprocessSandbox
 from blindfold.tools.blindfold_compute import (
@@ -38,13 +38,10 @@ from blindfold.tools.blindfold_compute import (
 )
 
 MODEL = "claude-opus-4-7"
-SYSTEM_PROMPT = (
-    "You have MCP tools that return TOKENIZED values shown as ⟦tok_XXXXXXXX⟧. "
-    "You cannot see the underlying values. When you need to compare, aggregate, "
-    "or otherwise derive from them, call the `blindfold_compute` tool. Pass every "
-    "token your code will call resolve() on in the `inputs` array. Preserve tokens "
-    "in your final answer VERBATIM — never invent, alter, or paraphrase them."
-)
+# Ships with the package, so an integration does not have to know to copy it
+# out of an example. Rehydration only works on placeholders the model
+# reproduced exactly, and nothing else enforces that.
+SYSTEM_PROMPT = PLACEHOLDER_PROMPT
 
 
 async def _amain(question: str) -> None:
@@ -73,10 +70,18 @@ async def _amain(question: str) -> None:
         async with ClientSession(read, write) as session:
             await session.initialize()
             listed = await session.list_tools()
-            tools = [
-                {"name": t.name, "description": t.description or "", "input_schema": t.inputSchema}
-                for t in listed.tools
-            ]
+            # Integration point 1a: tell the model what each protected tool's
+            # placeholders mean. Mode A does this for you by rewriting the
+            # tools/list response; in-process, it is this append.
+            tools = []
+            for t in listed.tools:
+                description = t.description or ""
+                note = describe_schema(schema_fields_for(config, t.name))
+                if note is not None:
+                    description = f"{description.rstrip()}\n\n{note}".lstrip()
+                tools.append(
+                    {"name": t.name, "description": description, "input_schema": t.inputSchema}
+                )
             tool_def = build_tool_definition()
             tools.append({
                 "name": BLINDFOLD_COMPUTE_TOOL_NAME,
