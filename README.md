@@ -153,18 +153,25 @@ This protects the LLM provider from ever seeing the values, and needs no applica
 claude --plugin-dir ./plugin        # from a clone; see plugin/README.md
 ```
 
-Claude Code exposes two hooks that happen to be exactly the two seams this
-project needs, and they fit better than the proxy does:
+Three hooks and one small MCP server, because a host gives Blindfold different
+seams than a protocol does:
 
-| Hook | Blindfold uses it for |
+| Piece | Does what |
 |---|---|
-| `PostToolUse` → `updatedToolOutput` | rewrites the tool result **the model receives** — tokenization, for *every* tool, not only MCP servers: `Bash`, `Read` and `WebFetch` included |
-| `MessageDisplay` → `displayContent` | rewrites **what the screen shows**, leaving the transcript untouched — rehydration |
+| `SessionStart` hook → `additionalContext` | tells the model, once before the first prompt, which paths come back as placeholders and what they mean — and to reproduce them verbatim |
+| `PostToolUse` hook → `updatedToolOutput` | rewrites the tool result **the model receives** — tokenization, for *every* tool, not only MCP servers: `Bash`, `Read` and `WebFetch` included |
+| `mcp-server` (`blindfold mcp-server`) | offers `blindfold_compute` as an ordinary tool, so the model can operate on what it cannot read |
+| `MessageDisplay` hook → `displayContent` | rewrites **what the screen shows**, leaving the transcript untouched — rehydration |
 
-The second one solves the problem Mode A cannot. Because `MessageDisplay` is
+The last one solves the problem Mode A cannot. Because `MessageDisplay` is
 display-only, the user reads real values while the conversation keeps the
 placeholders — so the values never re-enter the model's context on the next
 turn. The proxy has no way to make that distinction.
+
+The first and third exist because a host's hooks **cannot add a tool or edit a
+tool description**. Mode A does both by rewriting the `tools/list` response as
+it passes the proxy; here the same information has to arrive as session context,
+and blind compute has to arrive the way every other tool does.
 
 This mode **requires `storage.backend: sqlite`**: every hook invocation is a
 separate process, so the vault has to be shared. The CLI refuses to run the
@@ -332,6 +339,7 @@ Ordered by what the current release most needs, not by ambition.
 - [x] **Expiry frees memory** — the vault sweeps expired records instead of holding cleartext values for the life of the process
 - [x] **SQLite store** — a vault that survives a restart and can be shared between processes
 - [x] **Claude Code hooks** — tokenization and reveal without a proxy, and without placeholders reaching the user
+- [x] **Mode C completed** — session briefing so the model knows what the placeholders are, and an MCP server so it can compute on them
 - [ ] Encryption at rest, now that there is a file to encrypt and still no good answer for where the key lives
 - [x] **Restricted builtins in the compute child** — the easy filesystem and network paths are gone without anyone installing Docker; not a boundary, a higher cost
 - [ ] Export the placeholder-preserving prompt fragment as a package constant

@@ -290,3 +290,50 @@ def test_cli_never_puts_an_exception_message_in_its_output(monkeypatch, capsys, 
     out = capsys.readouterr()
     assert "71000" not in out.out + out.err
     assert "RuntimeError" in out.err
+
+
+# --- SessionStart: the only way to explain placeholders in a host ----------
+#
+# No hook can rewrite a tool description, so the information Mode A appends to
+# tools/list has to arrive as session context instead.
+
+
+def test_session_start_names_every_protected_path(config, tmp_path, vault_path):
+    out = hooks.handle_session_start({"session_id": SESSION}, config=config)
+    brief = out["hookSpecificOutput"]["additionalContext"]
+    assert out["hookSpecificOutput"]["hookEventName"] == "SessionStart"
+    assert TOOL in brief
+    assert "$.salary" in brief
+    assert "EUR/year" in brief
+
+
+def test_session_start_tells_the_model_how_to_operate_and_to_copy_verbatim(config):
+    brief = hooks.handle_session_start({"session_id": SESSION}, config=config)[
+        "hookSpecificOutput"
+    ]["additionalContext"]
+    assert "blindfold_compute" in brief
+    assert "VERBATIM" in brief
+
+
+def test_session_start_is_silent_when_nothing_is_declared():
+    assert hooks.handle_session_start({"session_id": SESSION}, config=BlindfoldConfig()) is None
+
+
+def test_session_start_never_contains_a_real_value(config):
+    # It is built from config alone and never touches a response.
+    brief = hooks.handle_session_start({"session_id": SESSION}, config=config)[
+        "hookSpecificOutput"
+    ]["additionalContext"]
+    assert "71000" not in brief
+
+
+def test_cli_session_start_round_trip(monkeypatch, capsys, tmp_path, vault_path):
+    cfg = _write_config(tmp_path, "sqlite", vault_path)
+    _, out = _run(
+        monkeypatch,
+        capsys,
+        hooks.SESSION_START,
+        {"session_id": SESSION, "hook_event_name": "SessionStart", "source": "startup"},
+        cfg,
+    )
+    assert TOOL in json.loads(out.out)["hookSpecificOutput"]["additionalContext"]

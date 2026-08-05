@@ -8,19 +8,21 @@ import json
 import sys
 from pathlib import Path
 
-from blindfold import hooks
+from blindfold import hooks, mcp_server
 from blindfold.config import BlindfoldConfig, build_token_store, load_config
 from blindfold.core.policy import SessionBoundPolicy
 from blindfold.proxy import run_proxy
 
 USAGE = (
     "blindfold [--config PATH] -- <downstream-mcp-command> [args...]\n"
-    "blindfold hook <post-tool-use|message-display> [--config PATH]\n\n"
+    "blindfold hook <post-tool-use|message-display|session-start> [--config PATH]\n"
+    "blindfold mcp-server [--config PATH]\n\n"
     "Wraps the given stdio MCP server, tokenizing tool results and exposing\n"
     "the blindfold_compute tool + blindfold/rehydrate JSON-RPC method.\n\n"
     "`hook` reads one Claude Code hook event as JSON on stdin and writes the\n"
-    "hook response on stdout. It needs a shared vault (storage.backend: sqlite)\n"
-    "because every hook invocation is a separate process."
+    "hook response on stdout. `mcp-server` exposes blindfold_compute so a host\n"
+    "can offer it as an ordinary tool. Both need a shared vault\n"
+    "(storage.backend: sqlite): they run as separate processes."
 )
 
 
@@ -36,6 +38,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if argv and argv[0] == "hook":
         return run_hook(argv[1:])
+
+    if argv and argv[0] == "mcp-server":
+        return run_mcp_server(argv[1:])
 
     own, downstream = _split_argv(argv)
     parser = argparse.ArgumentParser(
@@ -113,6 +118,20 @@ def run_hook(argv: list[str]) -> int:
 
     if response is not None:
         print(json.dumps(response, ensure_ascii=False))
+    return 0
+
+
+def run_mcp_server(argv: list[str]) -> int:
+    """Serve blindfold_compute over stdio MCP."""
+    parser = argparse.ArgumentParser(prog="blindfold mcp-server", usage=USAGE)
+    parser.add_argument("--config", type=Path, default=Path("blindfold.yaml"))
+    args = parser.parse_args(argv)
+
+    try:
+        mcp_server.run(args.config)
+    except mcp_server.SharedVaultRequired as exc:
+        print(f"[blindfold] {exc}", file=sys.stderr)
+        return 1
     return 0
 
 

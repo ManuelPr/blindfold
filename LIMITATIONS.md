@@ -21,7 +21,7 @@ Blindfold has three integration modes; a few of the limits below apply to only o
 
 - **Mode A: CLI proxy** — `blindfold -- <mcp-server>`, wraps a stdio MCP server. Requires that your app already speak MCP (Claude Desktop, Cursor, custom agent on the `mcp` client SDK, etc.). **Protects, but does not deliver:** with a client you did not write, the values never come back — read [Rehydration requires a client you control](#rehydration-requires-a-client-you-control) before choosing this mode.
 - **Mode B: In-process library** — `from blindfold import ...`, called from your existing agent loop. Works with any LLM SDK (Anthropic, OpenAI, Gemini, self-hosted, LangChain, LlamaIndex, …); no MCP required.
-- **Mode C: Claude Code plugin** — two host hooks instead of a proxy. Tokenizes every tool, not only MCP servers, and reveals values on screen while the transcript keeps the placeholders. **Requires `storage.backend: sqlite`**, since each hook run is a separate process. See [`plugin/README.md`](plugin/README.md).
+- **Mode C: Claude Code plugin** — three host hooks plus a one-tool MCP server, instead of a proxy. Tokenizes every tool rather than only MCP servers, and reveals values on screen while the transcript keeps the placeholders. **Requires `storage.backend: sqlite`**, since each hook run and the server are separate processes. See [`plugin/README.md`](plugin/README.md).
 
 Unless a bullet is tagged `[Mode A only]`, `[Mode B only]` or `[Mode C only]`, the limit applies to all of them. See [`docs/architecture.md#3-two-integration-modes`](docs/architecture.md#3-two-integration-modes) for the full picture.
 
@@ -172,15 +172,19 @@ The subprocess sandbox is the one place where real values meet code the model wr
 - **Runtime dtype is not surfaced.** The vault records whether a hidden value is a number, string, or object, but the tool description is built from config alone and cannot know. The model infers it from `semantic_type`/`unit`. Declaring dtype in `blindfold.yaml` would close this if it ever matters.
 - **[Mode B only]** `describe_schema()` is exported but nothing calls it for you — in-process library users must add it to their own tool definitions. Mode A (CLI proxy) does it automatically. Since Mode B is the mode where the whole loop closes, this means the feature is currently automatic only in the mode that cannot show the user a result.
 
-  **Fix: three lines per integration.** Append `describe_schema(fields)` to the tool description you pass your LLM SDK. The `examples/` demos should do it and currently do not.
+  **Fix: three lines per integration.** Append `describe_schema(fields)` to the tool description you pass your LLM SDK. The `examples/` demos should do it and currently do not. Mode C solves the same problem differently — `describe_config(config)` builds one briefing for the whole session, because a host lets nobody edit a tool description; that function is reusable from Mode B if a single up-front briefing suits your loop better than per-tool text.
 
-- **The prompt fragment that keeps placeholders intact is not shipped.** Rehydration depends on the model reproducing `⟦tok_…⟧` verbatim in its answer. The instruction that makes it do so lives in `SYSTEM_PROMPT` in [`examples/demo_chat.py`](examples/demo_chat.py) — copy it. The README previously said it shipped with the proxy; it does not.
+- **The prompt fragment that keeps placeholders intact is not shipped as a constant.** Rehydration depends on the model reproducing `⟦tok_…⟧` verbatim in its answer. Mode C now carries that instruction inside the `SessionStart` briefing, so it is covered there. Mode A and Mode B still need you to copy it from `SYSTEM_PROMPT` in [`examples/demo_chat.py`](examples/demo_chat.py). The README previously said it shipped with the proxy; it does not.
 
   **Fix: trivial** — export it as a package constant.
 
 - **Rehydrated values are rendered with `str()`.** For numbers and strings this is what you want. A hidden value that is an object or a list renders as its Python representation (single quotes, `True`/`None`), not JSON. Cosmetic until you hide a structured field.
 
 ### Policy
+- **[Mode C only] The compute server infers the session from its inputs.** An MCP connection carries no session identity, so `blindfold mcp-server` reads the session off the input tokens, refuses to mix two, and mints the result into that session — which is what lets the display hook reveal it rather than rendering `[redacted]`. The consequence, stated plainly: **possession of a token is treated as proof of belonging to its session.** Tokens are unguessable and never leave the trust zone, but they do reach the model, so a model can compute on any token it has seen — which are the tokens of its own session anyway. In Mode A and Mode B the session is known independently and this substitution does not happen.
+
+  **Fix:** needs a way for the host to tell an MCP server which session it serves. Nothing in MCP provides one today.
+
 - **Only `SessionBoundPolicy` ships.** No `webhook`, `claims`, or `allow_all` implementations yet — though the port is in place so they are additive to build. **Fix: small, one class each**; the wiring already calls `can_reveal` and `can_compute` at the right points.
 - **Session isolation is per proxy process, not per user.** `SessionBoundPolicy` compares a `session_id` that Mode A generates once per proxy launch. That is real isolation between two runs, and no isolation between two users sharing one run — which is fine because no multi-user deployment exists yet. **Fix:** comes with server mode; the policy contract does not need to change, only who supplies the `session_id`.
 

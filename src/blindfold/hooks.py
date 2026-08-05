@@ -46,7 +46,61 @@ from blindfold.ports.token_store import TokenStore
 
 POST_TOOL_USE = "post-tool-use"
 MESSAGE_DISPLAY = "message-display"
-EVENTS = (POST_TOOL_USE, MESSAGE_DISPLAY)
+SESSION_START = "session-start"
+EVENTS = (POST_TOOL_USE, MESSAGE_DISPLAY, SESSION_START)
+
+
+def describe_config(config: BlindfoldConfig) -> str | None:
+    """The whole session's protected paths, in one briefing.
+
+    Mode A can edit tool descriptions on their way past the proxy. Nothing in
+    a host's hook system can — tool definitions are not rewritable — so the
+    same information has to arrive as session context instead: once, at the
+    start, before the first prompt.
+
+    It carries the placeholder-preservation instruction too. A model that
+    paraphrases ``⟦tok_7f3a1b2c⟧`` breaks rehydration, and in this mode there
+    is no system prompt of ours to put that rule in.
+    """
+    lines = []
+    for tool_name in sorted(config.schemas):
+        fields = schema_fields_for(config, tool_name)
+        if not fields:
+            continue
+        lines.append(f"  {tool_name}")
+        for field in fields:
+            meta = ", ".join(m for m in (field.semantic_type, field.unit) if m)
+            lines.append(f"    {field.path}{f' — {meta}' if meta else ''}")
+    if not lines:
+        return None
+    return (
+        "Blindfold is protecting some of this session's tool results.\n\n"
+        "Values at the paths listed below come back as ⟦tok_XXXXXXXX⟧ placeholders "
+        "instead of real values. You cannot read them, and guessing at them is "
+        "always wrong.\n\n"
+        "To compare, sort, aggregate or otherwise derive from them, call the "
+        "`blindfold_compute` tool (it may appear as `mcp__blindfold__blindfold_compute`). "
+        "Pass every placeholder your code resolves in its `inputs` array; it returns a "
+        "new placeholder, never a value.\n\n"
+        "Reproduce placeholders VERBATIM in your answers — never invent, alter, "
+        "shorten or paraphrase them. The user's screen shows the real values in "
+        "their place; you never see them, and a mangled placeholder shows the user "
+        "nothing.\n\n"
+        "Protected paths:\n" + "\n".join(lines)
+    )
+
+
+def handle_session_start(event: dict, *, config: BlindfoldConfig) -> dict | None:
+    """Tell the model what the placeholders mean, once, before the first prompt."""
+    brief = describe_config(config)
+    if brief is None:
+        return None
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": brief,
+        }
+    }
 
 
 def handle_post_tool_use(
@@ -128,6 +182,8 @@ def dispatch(
         return handle_post_tool_use(event, config=config, store=store)
     if event_name == MESSAGE_DISPLAY:
         return handle_message_display(event, store=store, policy=policy)
+    if event_name == SESSION_START:
+        return handle_session_start(event, config=config)
     raise ValueError(f"unknown hook event {event_name!r}; expected one of {', '.join(EVENTS)}")
 
 

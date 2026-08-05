@@ -103,6 +103,24 @@ handlers, wired by [`plugin/hooks/hooks.json`](../plugin/hooks/hooks.json) to
   property the proxy cannot offer: the user reads real values and the
   conversation keeps the placeholders, so nothing re-enters the model's context
   on the next turn.
+- **`SessionStart`** returns `additionalContext`, injected before the first
+  prompt. It carries `describe_config(config)` — every protected path with its
+  meaning, plus the instruction to reproduce placeholders verbatim.
+
+Two things Mode A does by editing the `tools/list` response cannot be done here
+at all: **no hook can add a tool, and none can edit a tool description.** So the
+schema briefing moved to `SessionStart`, and `blindfold_compute` had to become a
+real MCP server — [`src/blindfold/mcp_server.py`](../src/blindfold/mcp_server.py),
+declared in [`plugin/.mcp.json`](../plugin/.mcp.json). Without it the model can
+read placeholders and do nothing with them.
+
+That server has one problem the proxy and the library do not: **it does not know
+whose session it is serving.** MCP connections carry no session identity. So it
+reads the session off the input tokens, refuses to mix two, and mints the result
+into that same session — which is what lets `MessageDisplay`, bound to the
+host's session, reveal the result instead of rendering `[redacted]`. The
+trade-off is explicit: possession of a token is taken as proof of belonging to
+its session.
 
 Two properties this mode forced into the design:
 
