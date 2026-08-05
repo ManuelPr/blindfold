@@ -1,0 +1,19 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "blindfold hook post-tool-use" }
+        ]
+      }
+    ],
+    "MessageDisplay": [
+      {
+        "hooks": [
+          { "type": "command", "command": "blindfold hook message-display" }
+        ]
+      }
+    ]
+  }
+}

@@ -88,6 +88,37 @@ Four integration points in your loop:
 
 Framework-agnostic, LLM-agnostic. Works with any provider that supports tool use / function calling. See [`examples/demo_chat.py`](../examples/demo_chat.py) for the full pattern against the Anthropic SDK — swapping in OpenAI or Gemini is a matter of changing the SDK client and the tool_result payload shape.
 
+### Mode C: Claude Code plugin — two hooks, no proxy
+
+The host offers its own seams, and they turn out to be a better fit than the
+protocol's. [`src/blindfold/hooks.py`](../src/blindfold/hooks.py) implements two
+handlers, wired by [`plugin/hooks/hooks.json`](../plugin/hooks/hooks.json) to
+`blindfold hook <event>`:
+
+- **`PostToolUse`** returns `updatedToolOutput`, which replaces the tool result
+  *the model receives*. Same job as `_tokenize_tool_call_result` in the proxy,
+  except it covers every tool the host has rather than one stdio MCP server.
+- **`MessageDisplay`** returns `displayContent`, which replaces *what the screen
+  shows* while the transcript keeps the original. That is rehydration, with a
+  property the proxy cannot offer: the user reads real values and the
+  conversation keeps the placeholders, so nothing re-enters the model's context
+  on the next turn.
+
+Two properties this mode forced into the design:
+
+**A shared vault is not optional.** Each hook invocation is a separate process.
+A token minted by `PostToolUse` must still resolve when `MessageDisplay` runs
+seconds later from somewhere else, so the CLI refuses to run the hooks unless
+`storage.backend` is `sqlite`. This is what made the persistent store a
+prerequisite rather than a convenience.
+
+**Failure blocks rather than passes.** Printing nothing tells the host to keep
+what it had — for `PostToolUse` that is the untokenized result on its way to
+the model. So a tool with declared fields whose result cannot be tokenized is
+blocked with `{"decision": "block"}`. `MessageDisplay` is the opposite: nothing
+leaks if it does nothing, so it stays quiet on failure and the user sees a
+placeholder. The asymmetry is deliberate and lives in `run_hook`.
+
 ### Which mode do you need?
 
 | Your setup | Mode |

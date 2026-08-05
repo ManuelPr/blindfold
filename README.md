@@ -136,7 +136,7 @@ git clone https://github.com/ManuelPr/blindfold && cd blindfold
 uv sync            # or:  pip install -e .
 ```
 
-There are two ways to use it, and the difference matters more than it looks — **pick Mode B unless you know why you want Mode A.**
+There are three ways to use it. **Inside Claude Code, pick Mode C. Everywhere else, pick Mode B unless you know why you want Mode A.**
 
 **Mode A — a CLI wrapping another stdio MCP server:**
 
@@ -146,6 +146,30 @@ blindfold --config blindfold.yaml -- python -m your_org.some_mcp_server
 ```
 
 This protects the LLM provider from ever seeing the values, and needs no application code. But it stops there: the proxy sits on the tool channel, below the client, so the model's *answer* never passes through it. With a client you did not write — Claude Desktop, Cursor, Zed — the end user reads `The higher earner is ⟦tok_9c1bf051⟧` and nothing turns that back into a name. This is structural, not a missing feature: see [`LIMITATIONS.md`](LIMITATIONS.md#rehydration-requires-a-client-you-control). Mode A is the right choice when hiding the values from the provider is the whole goal and placeholders in the output are acceptable, or when the MCP client is yours and can call `blindfold/rehydrate`.
+
+**Mode C — a Claude Code plugin:**
+
+```bash
+claude --plugin-dir ./plugin        # from a clone; see plugin/README.md
+```
+
+Claude Code exposes two hooks that happen to be exactly the two seams this
+project needs, and they fit better than the proxy does:
+
+| Hook | Blindfold uses it for |
+|---|---|
+| `PostToolUse` → `updatedToolOutput` | rewrites the tool result **the model receives** — tokenization, for *every* tool, not only MCP servers: `Bash`, `Read` and `WebFetch` included |
+| `MessageDisplay` → `displayContent` | rewrites **what the screen shows**, leaving the transcript untouched — rehydration |
+
+The second one solves the problem Mode A cannot. Because `MessageDisplay` is
+display-only, the user reads real values while the conversation keeps the
+placeholders — so the values never re-enter the model's context on the next
+turn. The proxy has no way to make that distinction.
+
+This mode **requires `storage.backend: sqlite`**: every hook invocation is a
+separate process, so the vault has to be shared. The CLI refuses to run the
+hooks with a memory vault rather than minting tokens nobody will be able to
+resolve.
 
 **Mode B — an in-process library (used by a harness you write):**
 
@@ -307,6 +331,7 @@ Ordered by what the current release most needs, not by ambition.
 - [x] **Path validation at config load** — syntax the dialect cannot honor is refused at startup instead of being silently reinterpreted
 - [x] **Expiry frees memory** — the vault sweeps expired records instead of holding cleartext values for the life of the process
 - [x] **SQLite store** — a vault that survives a restart and can be shared between processes
+- [x] **Claude Code hooks** — tokenization and reveal without a proxy, and without placeholders reaching the user
 - [ ] Encryption at rest, now that there is a file to encrypt and still no good answer for where the key lives
 - [x] **Restricted builtins in the compute child** — the easy filesystem and network paths are gone without anyone installing Docker; not a boundary, a higher cost
 - [ ] Export the placeholder-preserving prompt fragment as a package constant

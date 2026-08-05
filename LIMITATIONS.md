@@ -17,12 +17,13 @@ A few entries are marked **Fix: none** inside the MVP section — that means the
 
 ## Deployment surface (context for the limits below)
 
-Blindfold has two integration modes; a few of the limits below apply to only one of them.
+Blindfold has three integration modes; a few of the limits below apply to only one of them.
 
 - **Mode A: CLI proxy** — `blindfold -- <mcp-server>`, wraps a stdio MCP server. Requires that your app already speak MCP (Claude Desktop, Cursor, custom agent on the `mcp` client SDK, etc.). **Protects, but does not deliver:** with a client you did not write, the values never come back — read [Rehydration requires a client you control](#rehydration-requires-a-client-you-control) before choosing this mode.
 - **Mode B: In-process library** — `from blindfold import ...`, called from your existing agent loop. Works with any LLM SDK (Anthropic, OpenAI, Gemini, self-hosted, LangChain, LlamaIndex, …); no MCP required.
+- **Mode C: Claude Code plugin** — two host hooks instead of a proxy. Tokenizes every tool, not only MCP servers, and reveals values on screen while the transcript keeps the placeholders. **Requires `storage.backend: sqlite`**, since each hook run is a separate process. See [`plugin/README.md`](plugin/README.md).
 
-Unless a bullet is tagged `[Mode A only]` or `[Mode B only]`, the limit applies to both modes. See [`docs/architecture.md#3-two-integration-modes`](docs/architecture.md#3-two-integration-modes) for the full picture, including the four integration points for Mode B.
+Unless a bullet is tagged `[Mode A only]`, `[Mode B only]` or `[Mode C only]`, the limit applies to all of them. See [`docs/architecture.md#3-two-integration-modes`](docs/architecture.md#3-two-integration-modes) for the full picture.
 
 ---
 
@@ -42,9 +43,11 @@ Concretely, wrapping your server with `blindfold -- …` under Claude Desktop, C
 
 and stops there. The values are genuinely protected — the provider never saw them — but the end user cannot read the answer either.
 
-This is structural. The proxy sits on the tool channel, underneath the client; the assistant's final message never passes through it. There is no MCP mechanism for a server to post-process what the model says. The obvious workaround — exposing rehydration as an ordinary tool the model can call — defeats the entire design, because a tool result goes into the model's context, which is exactly where the real values must not go.
+This is structural *within MCP*. The proxy sits on the tool channel, underneath the client; the assistant's final message never passes through it, and the protocol gives a server no hook on what the model says. The obvious workaround — exposing rehydration as an ordinary tool the model can call — defeats the entire design, because a tool result goes into the model's context, which is exactly where the real values must not go.
 
-**What this means in practice:** Mode A is the right choice when hiding values from the LLM provider is the whole goal and placeholders in the output are acceptable (audit trails, pipelines whose output is consumed by code, a client that will grow support for the custom method). If a human has to read the values, you need Mode B or a client of your own.
+**The escape is a host feature, not a protocol one.** A host that offers its own hook on displayed text can do what MCP cannot. Claude Code does: `MessageDisplay` rewrites what appears on screen while leaving the transcript untouched — see Mode C in the [README](README.md#quick-start) and [`plugin/`](plugin/README.md). That is not a loophole in this limit, it is the limit's shape: rehydration needs someone who owns the final message, and a host owns it even when your application does not.
+
+**What this means in practice:** Mode A is the right choice when hiding values from the LLM provider is the whole goal and placeholders in the output are acceptable (audit trails, pipelines whose output is consumed by code, a client that will grow support for the custom method). If a human has to read the values, you need Mode B, a client of your own, or a host with a display hook.
 
 ### Blind compute answers one bit per call, whatever the sandbox
 

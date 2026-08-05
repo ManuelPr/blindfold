@@ -1,0 +1,6 @@
+{
+  "name": "blindfold",
+  "description": "Keeps values from your private tools out of the model's context, and shows you the real ones on screen.",
+  "version": "0.0.1",
+  "homepage": "https://github.com/ManuelPr/blindfold"
+}
