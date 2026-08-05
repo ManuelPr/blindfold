@@ -1,0 +1,71 @@
+name: CI
+
+# Blindfold was developed on Windows, and at least one behaviour differs by
+# platform for reasons nobody chose: the compute sandbox strips the environment,
+# and on Windows that removes SystemRoot, which happens to prevent sockets from
+# initialising. "It should work on Linux" stayed an assumption until this ran.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }} · py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python ${{ matrix.python }}
+        run: uv python install ${{ matrix.python }}
+
+      - name: Install
+        run: uv sync --all-extras --dev
+
+      - name: Test
+        run: uv run pytest -q
+        env:
+          # The token delimiters are U+27E6/U+27E7. Windows runners default to
+          # a codepage that cannot encode them, and a test that prints one would
+          # fail on the print rather than on the assertion.
+          PYTHONIOENCODING: utf-8
+
+  sandbox-probes:
+    name: sandbox reality check · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --dev
+
+      # LIMITATIONS.md makes specific claims about what the sandbox does and
+      # does not stop. This asserts them per platform rather than trusting a
+      # measurement taken once, on one machine.
+      - name: Assert the documented sandbox behaviour
+        run: uv run pytest tests/unit/test_sandbox.py -q
+        env:
+          PYTHONIOENCODING: utf-8
