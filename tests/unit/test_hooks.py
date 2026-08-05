@@ -337,3 +337,91 @@ def test_cli_session_start_round_trip(monkeypatch, capsys, tmp_path, vault_path)
         cfg,
     )
     assert TOOL in json.loads(out.out)["hookSpecificOutput"]["additionalContext"]
+
+
+# --- a tool that declares only a table --------------------------------------
+#
+# PostToolUse checked sensitive_fields alone, so a tool whose declaration was a
+# `tables:` entry got no protection at all: the hook returned None and the host
+# kept the original result, real values included. Silent, and fail-open, in the
+# mode documented as the best one.
+
+
+TABLE_TOOL = "mcp__hr__list_employees"
+
+
+@pytest.fixture
+def table_config():
+    from blindfold.config import ColumnConfig, TableConfig
+
+    return BlindfoldConfig(
+        schemas={
+            TABLE_TOOL: ToolSchemaConfig(
+                tables=[
+                    TableConfig(
+                        path="$.employees",
+                        columns=[
+                            ColumnConfig(name="name", semantic_type="person_name"),
+                            ColumnConfig(name="salary", semantic_type="salary", unit="EUR/year"),
+                        ],
+                    )
+                ]
+            )
+        }
+    )
+
+
+def test_a_table_only_tool_is_tokenized_by_the_hook(table_config, vault_path):
+    store = _store(vault_path)
+    try:
+        out = hooks.handle_post_tool_use(
+            {
+                "session_id": SESSION,
+                "tool_name": TABLE_TOOL,
+                "tool_output": json.dumps(
+                    {"employees": [{"name": "Andrea", "salary": 71000}]}
+                ),
+            },
+            config=table_config,
+            store=store,
+        )
+    finally:
+        store.close()
+
+    assert out is not None, "returning None hands the host the real values"
+    rewritten = out["hookSpecificOutput"]["updatedToolOutput"]
+    assert "71000" not in rewritten
+    assert "Andrea" not in rewritten
+    assert json.loads(rewritten)["employees"].startswith("⟦tok_")
+
+
+def test_the_table_token_is_queryable_from_another_process(table_config, vault_path):
+    from blindfold.core.policy import SessionBoundPolicy as _Policy
+    from blindfold.tools.blindfold_table import handle_blindfold_table
+
+    writer = _store(vault_path)
+    try:
+        out = hooks.handle_post_tool_use(
+            {
+                "session_id": SESSION,
+                "tool_name": TABLE_TOOL,
+                "tool_output": json.dumps(
+                    {"employees": [{"name": "Andrea", "salary": 71000}, {"name": "Maria", "salary": 55000}]}
+                ),
+            },
+            config=table_config,
+            store=writer,
+        )
+    finally:
+        writer.close()
+    token = json.loads(out["hookSpecificOutput"]["updatedToolOutput"])["employees"]
+
+    reader = _store(vault_path)
+    try:
+        derived = handle_blindfold_table(
+            {"table": token, "ops": [{"op": "max", "column": "salary"}]},
+            store=reader, policy=_Policy(), session_id=SESSION, ttl_seconds=3600,
+        )
+        assert reader.resolve(derived) == 71000
+    finally:
+        reader.close()

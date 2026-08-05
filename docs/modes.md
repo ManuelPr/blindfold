@@ -9,6 +9,18 @@ system that never shows anyone a result.
 
 ---
 
+## Try all three first
+
+```bash
+uv run python examples/try_modes.py        # all three
+uv run python examples/try_modes.py a      # one of them
+```
+
+No API key, no Ollama, no Docker. The model is scripted, because the point is to
+watch what happens to the data. Mode C is driven the way the host drives it —
+each hook a separate process over a shared vault — so you can see the whole
+sequence before installing anything.
+
 ## What Blindfold does, in one paragraph
 
 When your agent calls a tool, the tool's answer normally goes straight into the

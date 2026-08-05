@@ -46,7 +46,12 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from blindfold.config import BlindfoldConfig, describe_config, schema_fields_for
+from blindfold.config import (
+    BlindfoldConfig,
+    describe_config,
+    schema_fields_for,
+    table_schemas_for,
+)
 from blindfold.core.rehydrator import TOKEN_PATTERN, rehydrate
 from blindfold.core.tokenizer import tokenize_result
 from blindfold.ports.policy import DetokenizePolicy
@@ -80,7 +85,8 @@ def handle_post_tool_use(
     """Tokenize a tool result before the model sees it."""
     tool_name = event.get("tool_name") or ""
     fields = schema_fields_for(config, tool_name)
-    if not fields:
+    tables = table_schemas_for(config, tool_name)
+    if not fields and not tables:
         # Nothing declared for this tool: passing it through is the intended
         # behaviour, not a failure.
         return None
@@ -98,7 +104,7 @@ def handle_post_tool_use(
 
     ttl = datetime.now(tz=timezone.utc) + timedelta(seconds=config.tokens.default_ttl)
     tokenized = tokenize_result(
-        payload, tool_name, fields, store, _session_of(event), ttl
+        payload, tool_name, fields, store, _session_of(event), ttl, tables=tables
     )
     return {
         "hookSpecificOutput": {
