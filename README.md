@@ -410,6 +410,7 @@ Ordered by what the current release most needs, not by ambition.
 
 ### Current — kept in step with the code
 
+- **[`docs/modes.md`](docs/modes.md)** — which of the three integration modes you want, what each one can and cannot do, and the one question that decides it. Read this before installing anything.
 - **[`docs/architecture.md`](docs/architecture.md)** — how the code actually works. Component-by-component tour with a full end-to-end frame-by-frame example. Start here after this README.
 - **[`LIMITATIONS.md`](LIMITATIONS.md)** — what Blindfold does *not* do, split into by-design (permanent) and MVP (temporary), with a cost estimate on every closable gap. Read before deploying against real data.
 - **[`blindfold.example.yaml`](blindfold.example.yaml)** — a copy-paste-ready configuration example, containing exactly the keys the current release reads.

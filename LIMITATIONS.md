@@ -23,6 +23,8 @@ Blindfold has three integration modes; a few of the limits below apply to only o
 - **Mode B: In-process library** — `from blindfold import ...`, called from your existing agent loop. Works with any LLM SDK (Anthropic, OpenAI, Gemini, self-hosted, LangChain, LlamaIndex, …); no MCP required.
 - **Mode C: Claude Code plugin** — three host hooks plus a one-tool MCP server, instead of a proxy. Tokenizes every tool rather than only MCP servers, and reveals values on screen while the transcript keeps the placeholders. **Requires `storage.backend: sqlite`**, since each hook run and the server are separate processes. See [`plugin/README.md`](plugin/README.md).
 
+For a user-facing comparison — what each mode can and cannot do, and how to choose — see [`docs/modes.md`](docs/modes.md).
+
 Unless a bullet is tagged `[Mode A only]`, `[Mode B only]` or `[Mode C only]`, the limit applies to all of them. See [`docs/architecture.md#3-two-integration-modes`](docs/architecture.md#3-two-integration-modes) for the full picture.
 
 ---

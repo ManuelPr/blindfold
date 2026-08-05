@@ -181,12 +181,18 @@ def describe_config(config: BlindfoldConfig) -> str | None:
     lines = []
     for tool_name in sorted(config.schemas):
         fields = schema_fields_for(config, tool_name)
-        if not fields:
+        tables = table_schemas_for(config, tool_name)
+        if not fields and not tables:
             continue
         lines.append(f"  {tool_name}")
         for field in fields:
             meta = ", ".join(m for m in (field.semantic_type, field.unit) if m)
             lines.append(f"    {field.path}{f' — {meta}' if meta else ''}")
+        for path, schema in tables:
+            # Without this a collective token arrives in a host with nothing
+            # said about it: one opaque string and no idea what may be asked.
+            lines.append(f"    {path} — a whole table, one placeholder")
+            lines.append(f"      query it with blindfold_table; columns: {schema.describe()}")
     if not lines:
         return None
     return (

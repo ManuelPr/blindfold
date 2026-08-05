@@ -370,3 +370,30 @@ def _write(tmp_path, body: str):
     p = tmp_path / "blindfold.yaml"
     p.write_text(body, encoding="utf-8")
     return p
+
+
+def test_a_host_briefing_describes_tables_too():
+    # A config declaring only tables used to produce no briefing at all, so in
+    # a host the model got a collective token with nothing said about it.
+    from blindfold.config import describe_config
+
+    cfg = BlindfoldConfig(
+        schemas={
+            "hr.list": ToolSchemaConfig(
+                tables=[
+                    TableConfig(
+                        path="$.employees",
+                        columns=[
+                            ColumnConfig(name="salary", semantic_type="salary", unit="EUR/year"),
+                            ColumnConfig(name="dept"),
+                        ],
+                    )
+                ]
+            )
+        }
+    )
+    brief = describe_config(cfg)
+    assert brief is not None
+    for expected in ("hr.list", "$.employees", "blindfold_table", "salary", "EUR/year", "dept"):
+        assert expected in brief
+    assert "71000" not in brief
