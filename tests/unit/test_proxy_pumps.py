@@ -9,10 +9,13 @@ collaborators as arguments, so they can simply be called.
 """
 
 import json
+import re
 
 import pytest
 
 from blindfold.config import BlindfoldConfig, SensitiveFieldConfig, ToolSchemaConfig
+TOKEN_RE = re.compile(r"⟦tok_[0-9a-f]{8}⟧")
+
 from blindfold.proxy import _pump_child_to_client, _pump_client_to_child, build_proxy_state
 
 
@@ -202,3 +205,63 @@ async def test_a_declared_resource_that_is_not_json_is_not_silently_forwarded(re
     )
 
     assert "did not return JSON" in capsys.readouterr().err
+
+
+# --- the model has to be able to copy a placeholder back --------------------
+
+
+async def _tokenized_text(state, payload: dict, tool: str = "get_salary") -> str:
+    request = json.dumps(
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool}}
+    ).encode() + b"\n"
+    await _pump_client_to_child(_reader([request]), _FakeChild(), [].append, state)
+
+    response = json.dumps(
+        {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": json.dumps(payload)}]}}
+    ).encode() + b"\n"
+    written = []
+    await _pump_child_to_client(_FakeChild([response]), written.append, state)
+    return json.loads(written[0])["result"]["content"][0]["text"]
+
+
+@pytest.fixture
+def salary_state():
+    return build_proxy_state(
+        BlindfoldConfig(
+            schemas={
+                "get_salary": ToolSchemaConfig(
+                    sensitive_fields=[SensitiveFieldConfig(path="$.salary")]
+                )
+            }
+        )
+    )
+
+
+async def test_the_placeholder_reaches_the_model_unescaped(salary_state):
+    # The tool result is a JSON document inside a JSON string, so an escaping
+    # dump leaves the model looking at the literal characters \u27e6tok_…\u27e7.
+    # Copy that into an answer and TOKEN_PATTERN matches nothing: the user gets
+    # an escape sequence where a value should be.
+    text = await _tokenized_text(salary_state, {"name": "Andrea", "salary": 71000})
+
+    assert "⟦tok_" in text
+    # "u27e6" cannot occur any other way, and asserting on it needs no
+    # escaping of its own — which is how this check was wrong the first time.
+    assert "u27e6" not in text
+    assert TOKEN_RE.search(text), "the model must be able to copy back what it sees"
+
+
+async def test_a_tokenized_result_still_parses_as_json(salary_state):
+    text = await _tokenized_text(salary_state, {"name": "Andrea", "salary": 71000})
+    assert json.loads(text)["name"] == "Andrea"
+
+
+async def test_resources_are_unescaped_too(resource_state):
+    uri = "file:///hr/payroll.json"
+    await _pump_client_to_child(_reader([_read_request(uri)]), _FakeChild(), [].append, resource_state)
+    written = []
+    await _pump_child_to_client(
+        _FakeChild([_read_response(uri, json.dumps({"salary": 71000}))]), written.append, resource_state
+    )
+    text = json.loads(written[0])["result"]["contents"][0]["text"]
+    assert "⟦tok_" in text and "u27e6" not in text

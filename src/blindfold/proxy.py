@@ -235,7 +235,11 @@ def _tokenize_tool_call_result(msg: dict, tool_name: str, state: ProxyState) -> 
         tokenized = tokenize_result(
             payload, tool_name, fields, state.store, state.session_id, ttl, tables=tables
         )
-        content[i] = {"type": "text", "text": json.dumps(tokenized)}
+        # ensure_ascii=False, and it is not cosmetic: this text is what the
+        # model reads. Escaped, it sees the characters ⟦tok_…⟧ and
+        # may copy that form into its answer, which the rehydrator's regex
+        # does not match — the user would get an unreplaced escape sequence.
+        content[i] = {"type": "text", "text": json.dumps(tokenized, ensure_ascii=False)}
 
 
 def _tokenize_resource_read(msg: dict, requested_uri: str, state: ProxyState) -> None:
@@ -269,7 +273,7 @@ def _tokenize_resource_read(msg: dict, requested_uri: str, state: ProxyState) ->
             )
             continue
         tokenized = tokenize_result(payload, uri, fields, state.store, state.session_id, ttl)
-        part["text"] = json.dumps(tokenized)
+        part["text"] = json.dumps(tokenized, ensure_ascii=False)
 
 
 def _handle_blindfold_table(msg: dict, write_client, state: ProxyState) -> None:
