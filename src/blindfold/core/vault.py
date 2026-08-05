@@ -13,7 +13,6 @@ and never goes near the proxy.
 
 from __future__ import annotations
 
-import secrets
 from datetime import datetime, timezone
 from typing import Any
 
@@ -29,10 +28,6 @@ class MemoryTokenStore(TokenStore):
     def __init__(self) -> None:
         self._records: dict[str, VaultRecord] = {}
         self._last_purge = self._now()
-
-    @staticmethod
-    def mint_token() -> str:
-        return f"⟦tok_{secrets.token_hex(4)}⟧"
 
     def put(self, record: VaultRecord) -> None:
         self._sweep_if_due()

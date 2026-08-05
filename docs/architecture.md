@@ -17,7 +17,7 @@ Blindfold's design sits on three ideas that stack.
 
 ### 2.1 Tokenize the tool response before it reaches the model
 
-Every tool response is JSON. Sensitive fields — declared per-tool in `blindfold.yaml` — are replaced with opaque **token strings** (`⟦tok_XXXXXXXX⟧`) before the response leaves the proxy. The real values live in a local, in-memory **vault**. The model reasons over tokens; the real numbers never enter its context.
+Every tool response is JSON. Sensitive fields — declared per-tool in `blindfold.yaml` — are replaced with opaque **token strings** (`⟦tok_XXXXXXXX⟧`) before the response leaves the proxy. The real values live in a local **vault** — in memory, or in a SQLite file when they have to outlive the process or be read by another one. The model reasons over tokens; the real numbers never enter its context.
 
 ### 2.2 Blind compute — let the model operate on hidden values
 
@@ -123,7 +123,7 @@ These are called by the blind-compute handler when it mints a derived record, so
 
 Small ABCs, one per orthogonal concern. Only one implementation of each ships at MVP; alternatives are strictly additive.
 
-- **[`src/blindfold/ports/token_store.py`](../src/blindfold/ports/token_store.py)** — `TokenStore`: `put`, `get`, `resolve`, `find_by_session`, `invalidate_cascade`, `purge_expired`.
+- **[`src/blindfold/ports/token_store.py`](../src/blindfold/ports/token_store.py)** — `TokenStore`: `mint_token`, `put`, `get`, `resolve`, `find_by_session`, `invalidate_cascade`, `purge_expired`. `mint_token` lives on the port because the delimiters and hex width are a contract with the rehydrator's regex, not a property of where records are kept.
 - **[`src/blindfold/ports/policy.py`](../src/blindfold/ports/policy.py)** — `DetokenizePolicy` with `can_reveal` / `can_compute`, and a small `DetokenizeContext` dataclass.
 - **[`src/blindfold/ports/sandbox.py`](../src/blindfold/ports/sandbox.py)** — `ComputeSandbox.run(code, inputs, timeout_s)` and the `SandboxError` exception.
 
@@ -133,7 +133,17 @@ Small ABCs, one per orthogonal concern. Only one implementation of each ships at
 
 **`put` sweeps expired records on an interval** (`purge_interval_s`, 60 seconds by default), so expiry frees memory instead of only hiding records from `get`. It sits in the store rather than in the proxy so Mode B, which constructs its own store, gets it too. Amortized, so a record can outlive its TTL by up to one interval — set `purge_interval_s` lower if that matters.
 
-**`invalidate_cascade` is still not called by the runtime** — it is API surface for your code, not automatic behavior. Also exposes the static `mint_token()` factory used by tokenizer and compute handler alike: `f"⟦tok_{secrets.token_hex(4)}⟧"` — 8 hex characters between U+27E6 / U+27E7 white square brackets, chosen for collision-proof detection.
+### Persistent vault — [`src/blindfold/core/sqlite_store.py`](../src/blindfold/core/sqlite_store.py)
+
+`SQLiteTokenStore` — the same port, backed by a file instead of a dict. Selected with `storage.backend: sqlite`; `build_token_store(config)` returns one or the other, and nothing else in the system knows which it got. Standard-library `sqlite3`, WAL journaling so two processes can share one file, an index on the TTL column so expiry sweeps are not full scans.
+
+It exists for two reasons, and the second is the one that shaped it. Longevity is the obvious one: a vault that dies with the process leaves yesterday's placeholders pointing at nothing. **Cross-process sharing** is the one that unlocks new integrations — tokenizing and rehydrating need not happen in the same program, and a host that runs each callback in a fresh process cannot work at all with a memory vault, whatever the TTL.
+
+Both stores are held to one behavioural suite, [`tests/unit/test_token_store_conformance.py`](../tests/unit/test_token_store_conformance.py), which touches the public interface only.
+
+**The file holds cleartext.** Encryption at rest is not implemented, and `encrypt_at_rest: true` is refused at load rather than ignored. The store narrows file permissions to owner-only where the platform honors that. See [`LIMITATIONS.md`](../LIMITATIONS.md#storage).
+
+**`invalidate_cascade` is still not called by the runtime** — it is API surface for your code, not automatic behavior.
 
 ### Policy — [`src/blindfold/core/policy.py`](../src/blindfold/core/policy.py)
 
@@ -319,7 +329,8 @@ src/blindfold/
 ├── config.py                  # pydantic BlindfoldConfig
 ├── core/
 │   ├── lineage.py             # data model + composition helpers
-│   ├── vault.py               # MemoryTokenStore + mint_token
+│   ├── vault.py               # MemoryTokenStore
+│   ├── sqlite_store.py        # SQLiteTokenStore
 │   ├── tokenizer.py           # SchemaField + tokenize_result + JSONPath
 │   ├── rehydrator.py          # rehydrate + TOKEN_PATTERN
 │   └── policy.py              # SessionBoundPolicy

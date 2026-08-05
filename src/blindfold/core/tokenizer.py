@@ -14,7 +14,6 @@ from datetime import datetime, timezone
 from typing import Any
 
 from blindfold.core.lineage import Lineage, Policy, VaultRecord
-from blindfold.core.vault import MemoryTokenStore
 from blindfold.ports.token_store import TokenStore
 
 
@@ -93,7 +92,7 @@ def tokenize_result(
 
     for field in fields:
         for pointer, value in _resolve_paths(result, field.path):
-            token = MemoryTokenStore.mint_token()
+            token = TokenStore.mint_token()
             record = VaultRecord(
                 token=token,
                 value=copy.deepcopy(value),

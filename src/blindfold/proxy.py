@@ -22,11 +22,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, BinaryIO
 
-from blindfold.config import BlindfoldConfig, load_config, schema_fields_for
+from blindfold.config import BlindfoldConfig, build_token_store, load_config, schema_fields_for
 from blindfold.core.policy import SessionBoundPolicy
 from blindfold.core.rehydrator import rehydrate
 from blindfold.core.tokenizer import describe_schema, tokenize_result
-from blindfold.core.vault import MemoryTokenStore
 from blindfold.ports.policy import DetokenizePolicy
 from blindfold.ports.sandbox import ComputeSandbox, SandboxError
 from blindfold.ports.token_store import TokenStore
@@ -54,7 +53,7 @@ class ProxyState:
 
 def build_proxy_state(config: BlindfoldConfig) -> ProxyState:
     return ProxyState(
-        store=MemoryTokenStore(),
+        store=build_token_store(config),
         policy=SessionBoundPolicy(),
         sandbox=SubprocessSandbox(),
         config=config,

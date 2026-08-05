@@ -95,17 +95,21 @@ Everything below is a current-release gap. All of these are fixable and are call
 
 ### Storage
 
-- **In-memory vault only.** Process death = all state lost. The asymmetry is what hurts: the placeholders you already sent the model do *not* die with the process — they sit in the conversation history, the logs, your application's database — so after a restart those conversations rehydrate to `[unknown token]` and the real values exist nowhere.
+- ~~**In-memory vault only.**~~ **Closed.** `SQLiteTokenStore` ships alongside `MemoryTokenStore`, selected with `storage.backend: sqlite`. Standard library, no new dependency, WAL journaling so two processes can share one file. Memory remains the default: it is the right choice when nothing needs to outlive the session, and it exposes nothing to the filesystem.
 
-  **Fix:** a `sqlite3` store behind the existing `TokenStore` port — standard library, roughly forty lines, no new dependency. **Decide the TTL question first** (next bullet), because if tokens are meant to live one hour then persistence buys almost nothing.
+  Both stores are held to one behavioural suite ([`tests/unit/test_token_store_conformance.py`](tests/unit/test_token_store_conformance.py)) that uses the public interface only, so a deployment can swap them without the rest of the system noticing.
+
+  Worth being clear about *which* problem persistence solves, because there are two. The one usually named is longevity: placeholders already sent to a model do not die with the process — they sit in conversation history, logs, your application's database — so after a restart those conversations rehydrated to `[unknown token]` with the real values gone. The one that turns out to matter more is **sharing between processes**: tokenizing and rehydrating need not happen in the same program, and host integrations where each callback is a fresh process cannot work at all without a shared vault, whatever the TTL.
 
 - **A token's useful life is one hour by default, which is a separate limit from persistence.** `tokens.default_ttl` is 3600 seconds and expiry is checked on every `get`. An answer the user returns to tomorrow rehydrates as `[unknown token]` whether or not the vault was persistent. Persistence and retention are two decisions, and only the second one is currently making itself by default.
 
   **Fix:** none needed in code — raise `default_ttl` if long-lived conversations matter to you. What is worth building is a clearer signal than `[unknown token]` for the expiry case, so users are not left staring at an unexplained placeholder.
 
-- **No encryption at rest.** Values sit in cleartext in process memory. There is no disk state to encrypt yet, so this is not currently a gap so much as a promise the README used to make prematurely — it becomes real the moment a store writes to disk.
+- **No encryption at rest — and now there is something at rest.** With `backend: sqlite` the vault file holds every protected value in cleartext. This is the most consequential open item in this document: an in-memory vault needed access to a running process, a file needs read access to a file. The store narrows permissions to owner-only where the platform honors it (POSIX; Windows ignores the mode bits) and that is the whole of its protection. Treat the file as the secret it contains, and prefer `backend: memory` when nothing needs to survive the session.
 
-  **Fix:** feasible, but only worth doing with an externally supplied key (environment variable, OS keychain). A key stored beside the database file is decoration. If you are not prepared to make callers manage a key, the honest position is cleartext plus filesystem permissions.
+  `encrypt_at_rest: true` is **refused at load** rather than ignored, so a config cannot claim a guarantee the release does not have.
+
+  **Fix:** feasible, but only worth doing with an externally supplied key (environment variable, OS keychain). A key stored beside the database file is decoration. If you are not prepared to make callers manage a key, the honest position is cleartext plus filesystem permissions — which is where this stands.
 
 - ~~**Expired records are never actually removed.**~~ **Closed for expiry**, still open for invalidation. `put()` now sweeps expired records on an interval (60 seconds by default, settable per instance via `purge_interval_s`), so a TTL bounds how long a value *exists* rather than only how long it resolves. The sweep lives in the store rather than in the proxy, because Mode B builds its own store and never goes near the proxy. Consequence of amortizing it: an expired record can outlive its TTL by up to one interval, which is why the interval is settable.
 

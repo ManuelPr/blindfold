@@ -7,7 +7,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from blindfold.core.lineage import Lineage, Policy, VaultRecord, compose_policy, compose_ttl
-from blindfold.core.vault import MemoryTokenStore
 from blindfold.ports.policy import DetokenizeContext, DetokenizePolicy
 from blindfold.ports.sandbox import ComputeSandbox
 from blindfold.ports.token_store import TokenStore
@@ -81,7 +80,7 @@ def handle_blindfold_compute(
 
     value = sandbox.run(code=code, inputs=resolved, timeout_s=code_timeout_s)
 
-    new_token = MemoryTokenStore.mint_token()
+    new_token = TokenStore.mint_token()
     now = datetime.now(tz=timezone.utc)
     ttl = (
         compose_ttl(input_records)

@@ -10,3 +10,11 @@ schemas:
 
 tokens:
   default_ttl: 3600
+
+storage:
+  # memory (default) loses everything when the process ends. Choose sqlite when
+  # the vault must outlive a restart, or when tokenizing and rehydrating happen
+  # in different processes. The file holds cleartext values: protect it with
+  # filesystem permissions.
+  backend: memory
+  # path: ./vault.db

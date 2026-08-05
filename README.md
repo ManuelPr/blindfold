@@ -27,7 +27,7 @@ Existing PII-redaction proxies (Presidio, Philter, LLM Guard, …) solve a diffe
 
 Blindfold sits between your agent harness and your APIs (or MCP servers). It:
 
-1. **Tokenizes tool results.** Sensitive fields — declared per-tool in a schema — are replaced with typed anonymous tokens before the result reaches the LLM. The real values stay in a local vault, in the process's memory. **[planned]** encryption at rest, which arrives together with the persistent store — today there is no disk state to encrypt.
+1. **Tokenizes tool results.** Sensitive fields — declared per-tool in a schema — are replaced with typed anonymous tokens before the result reaches the LLM. The real values stay in a local vault — in memory by default, or in a SQLite file when the vault has to survive a restart or be shared between processes. **[planned]** encryption at rest: the file holds cleartext today, so protect it with filesystem permissions.
 2. **Tells the LLM what the tokens mean, not what they are.** Each protected tool's description gains one line per declared path — `$.salary — salary, EUR/year` — so the model knows what it is manipulating even when the upstream API names its fields `f_42`. Sent once, with the tool definitions; never per token, never the value.
 3. **Enables blind compute.** The LLM can submit code that operates on tokens. Blindfold resolves the tokens, executes the code in a sandbox on the real values, and stores the result as a *new* token with full lineage. The model orchestrates computations on data it never sees.
 4. **Rehydrates at the last hop.** Tokens in the model's answer are replaced with real values only when the response is delivered to the end user — after a pluggable authorization check. **This step is yours to call.** It happens in your application code, on the answer the model produced; a third-party MCP client will not do it for you (see [Quick start](#quick-start) and [`LIMITATIONS.md`](LIMITATIONS.md#rehydration-requires-a-client-you-control)).
@@ -37,7 +37,7 @@ Blindfold sits between your agent harness and your APIs (or MCP servers). It:
 │  Frontend  │◄─────────────────────────────│  Blindfold           │
 └────────────┘                              │  ┌───────────────┐  │
       │                                     │  │ token vault   │  │
-      ▼ prompt                              │  │ (in memory,   │  │
+      ▼ prompt                              │  │ (memory or    │  │
 ┌────────────┐   tool call                  │  │  ephemeral,   │  │
 │  Harness   │────────────────────────────► │  │  lineage DAG) │  │
 │  + LLM     │◄─────────────────────────────│  └───────────────┘  │
@@ -74,7 +74,7 @@ Every vault entry is a full record, not a bare key-value pair:
 ```json
 {
   "token": "tok_9c1b",
-  "value": "<held in process memory, never serialized toward the LLM>",
+  "value": "<held in the vault, never serialized toward the LLM>",
   "dtype": "string",
   "semantic_type": "person_name",
   "source": { "kind": "blind_compute" },
@@ -174,6 +174,10 @@ Everything deployment-specific lives in one file. **The current release reads ex
 tokens:
   default_ttl: 3600         # seconds a token stays resolvable
 
+storage:
+  backend: memory           # memory (default) | sqlite
+  path: ./vault.db          # sqlite only
+
 schemas:
   hr_api.get_salary:
     sensitive_fields:
@@ -181,6 +185,12 @@ schemas:
         semantic_type: salary
         unit: EUR/year
 ```
+
+Pick `sqlite` when the vault has to outlive the process, or when tokenizing and
+rehydrating happen in different processes. Pick `memory` — the default — when
+neither is true: it is faster and puts nothing on disk. Asking for a backend
+this release does not have, or for `encrypt_at_rest: true`, fails at load
+rather than being ignored.
 
 `default_ttl` deserves a thought before you deploy: it governs how long a conversation containing placeholders stays readable. At the default of one hour, an answer the user comes back to tomorrow rehydrates as `[unknown token]` — the placeholders in your chat history outlive the vault entries they point at. Raise it if that matters to you; the vault is in memory, so a restart ends the session either way.
 
@@ -190,11 +200,6 @@ The keys below are the designed shape of the configuration. They are **not imple
 
 ```yaml
 mode: local                 # local | server
-
-storage:
-  backend: sqlite           # memory | sqlite | redis | postgres
-  path: ./vault.db
-  encrypt_at_rest: true     # enforced by the core, not by adapters
 
 detokenize:
   policy: session_bound     # allow_all | session_bound | claims | webhook
@@ -214,9 +219,9 @@ compute:
   network: false
 ```
 
-Where today's behavior differs from what those keys suggest: every token is minted fresh (no `stable` consistency), the vault is always in memory, the policy is always `session_bound`, the sandbox is always the subprocess one with a hard-coded 5-second timeout, and `network: false` describes an intent rather than an enforced setting — see [Threat model](#threat-model--limitations).
+Where today's behavior differs from what those keys suggest: every token is minted fresh (no `stable` consistency), the policy is always `session_bound`, the sandbox is always the subprocess one with a hard-coded 5-second timeout, and `network: false` describes an intent rather than an enforced setting — see [Threat model](#threat-model--limitations).
 
-Two built-in profiles are designed to cover the common cases — **`local`** (single user, memory/SQLite vault, stdio MCP transport) and **`server`** (multi-user, Redis vault, webhook authorization, HTTP transport). **[planned]**: only the `local` shape exists, and only in its memory variant.
+Two built-in profiles are designed to cover the common cases — **`local`** (single user, memory/SQLite vault, stdio MCP transport) and **`server`** (multi-user, Redis vault, webhook authorization, HTTP transport). **[planned]**: only the `local` shape exists, now with either vault.
 
 ## Pluggable architecture
 
@@ -224,11 +229,11 @@ The core is deliberately small: intercept → tokenize → track lineage → bli
 
 | Port | Contract | Ships today | Designed **[planned]** |
 |---|---|---|---|
-| `TokenStore` | `put`, `get`, `resolve`, `find_by_session`, `invalidate_cascade`, `purge_expired` | `memory` | `sqlite`, `redis`, `postgres` |
+| `TokenStore` | `mint_token`, `put`, `get`, `resolve`, `find_by_session`, `invalidate_cascade`, `purge_expired` | `memory` *(default)*, `sqlite` | `redis`, `postgres` |
 | `DetokenizePolicy` | `can_reveal(context, token_record) → bool` | `session_bound` *(default)* | `allow_all`, `claims`, `webhook` |
 | `ComputeSandbox` | `run(code, resolved_inputs) → value` | `subprocess` | `docker` |
 
-One implementation each is the honest count. The ports exist so the rest is additive rather than a rewrite — that is their only claim.
+The ports exist so the rest is additive rather than a rewrite. The two `TokenStore` implementations are held to one behavioural suite that uses the public interface only, so swapping them changes nothing else.
 
 Notes for adapter authors:
 
@@ -238,7 +243,7 @@ Notes for adapter authors:
 
 ## Deployment
 
-**Local (personal agent)** — the only deployment that exists today. Everything runs on your machine and the vault is in memory: nothing survives the process. That is a real constraint, not a setting. Placeholders you already sent to the model, on the other hand, *do* survive — in your chat history, your logs, your app's database — so a restart leaves those conversations pointing at values that no longer exist anywhere.
+**Local (personal agent)** — the only deployment that exists today. Everything runs on your machine. With the default memory vault nothing survives the process, which matters because the placeholders you already sent the model *do* survive — in your chat history, your logs, your app's database — so a restart would leave those conversations pointing at values that exist nowhere. Switch to `backend: sqlite` if that matters, and treat the file as the secret it holds.
 
 **Server (internal chatbot, multi-user) [planned]:** Blindfold and its vault would run **server-side, inside your network perimeter**, next to the APIs they wrap — never in the browser, never on the client. Rehydration as the last server-side hop before the response reaches the user's frontend, gated by the configured policy. Intended vault: Redis (native TTL) for tokens and encrypted values, plus Postgres for the lineage/audit log *without* the values. None of this is built; the per-user isolation it implies does not exist yet either.
 
@@ -301,10 +306,10 @@ Ordered by what the current release most needs, not by ambition.
 - [x] **Sandbox output hygiene** — exception types only; child stdout/stderr go to the operator, never to the model
 - [x] **Path validation at config load** — syntax the dialect cannot honor is refused at startup instead of being silently reinterpreted
 - [x] **Expiry frees memory** — the vault sweeps expired records instead of holding cleartext values for the life of the process
+- [x] **SQLite store** — a vault that survives a restart and can be shared between processes
+- [ ] Encryption at rest, now that there is a file to encrypt and still no good answer for where the key lives
 - [x] **Restricted builtins in the compute child** — the easy filesystem and network paths are gone without anyone installing Docker; not a boundary, a higher cost
 - [ ] Export the placeholder-preserving prompt fragment as a package constant
-- [ ] SQLite store, with a decision on TTL policy first — persistence is only worth having if tokens are meant to outlive an hour
-- [ ] Encryption at rest, once there is a disk to encrypt and a place to keep the key that is not next to it
 - [ ] Collective (table) tokens + analytical compute over a fixed operation set — also the only thing that closes the one-bit oracle
 - [ ] Docker sandbox — the OS-level answer to network and filesystem, after the cheap in-process measures
 - [ ] HTTP proxy mode for plain REST APIs
