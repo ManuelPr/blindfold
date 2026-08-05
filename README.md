@@ -216,6 +216,13 @@ schemas:
       - path: $.salary
         semantic_type: salary
         unit: EUR/year
+
+resources:                  # MCP resources, keyed by URI glob
+  "file:///hr/*.json":
+    sensitive_fields:
+      - path: $.salary
+        semantic_type: salary
+        unit: EUR/year
 ```
 
 Pick `sqlite` when the vault has to outlive the process, or when tokenizing and

@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-from blindfold.config import BlindfoldConfig
+from blindfold.config import BlindfoldConfig, SensitiveFieldConfig, ToolSchemaConfig
 from blindfold.proxy import _pump_child_to_client, _pump_client_to_child, build_proxy_state
 
 
@@ -111,3 +111,94 @@ async def test_malformed_json_from_the_child_is_passed_through(state):
     await _pump_child_to_client(_FakeChild([junk]), written.append, state)
 
     assert written == [junk]
+
+
+# --- resources carry data too ---------------------------------------------
+#
+# resources/* used to pass through untouched, so a server exposing salaries as
+# a resource rather than as a tool got no protection at all.
+
+RESOURCE_CONFIG = BlindfoldConfig(
+    resources={
+        "file:///hr/*.json": ToolSchemaConfig(
+            sensitive_fields=[SensitiveFieldConfig(path="$.salary", semantic_type="salary")]
+        )
+    }
+)
+
+
+def _read_request(uri: str, rid: int = 5) -> bytes:
+    return json.dumps(
+        {"jsonrpc": "2.0", "id": rid, "method": "resources/read", "params": {"uri": uri}}
+    ).encode() + b"\n"
+
+
+def _read_response(uri: str, text: str, rid: int = 5) -> bytes:
+    return json.dumps(
+        {"jsonrpc": "2.0", "id": rid, "result": {"contents": [{"uri": uri, "text": text}]}}
+    ).encode() + b"\n"
+
+
+@pytest.fixture
+def resource_state():
+    return build_proxy_state(RESOURCE_CONFIG)
+
+
+async def test_a_declared_resource_is_tokenized(resource_state):
+    uri = "file:///hr/payroll.json"
+    await _pump_client_to_child(_reader([_read_request(uri)]), _FakeChild(), [].append, resource_state)
+    assert resource_state.pending_reads == {5: uri}
+
+    written = []
+    await _pump_child_to_client(
+        _FakeChild([_read_response(uri, json.dumps({"name": "Andrea", "salary": 71000}))]),
+        written.append,
+        resource_state,
+    )
+
+    out = json.loads(written[0])["result"]["contents"][0]["text"]
+    assert "71000" not in out
+    assert json.loads(out)["name"] == "Andrea"
+    assert json.loads(out)["salary"].startswith("⟦tok_")
+
+
+async def test_an_undeclared_resource_is_left_alone(resource_state):
+    uri = "file:///public/notes.json"
+    await _pump_client_to_child(_reader([_read_request(uri)]), _FakeChild(), [].append, resource_state)
+
+    written = []
+    await _pump_child_to_client(
+        _FakeChild([_read_response(uri, json.dumps({"salary": 71000}))]),
+        written.append,
+        resource_state,
+    )
+
+    assert json.loads(json.loads(written[0])["result"]["contents"][0]["text"])["salary"] == 71000
+
+
+async def test_the_uri_on_the_returned_part_wins_over_the_requested_one(resource_state):
+    # A server may answer a template read with a different concrete URI.
+    await _pump_client_to_child(
+        _reader([_read_request("file:///hr/{name}.json")]), _FakeChild(), [].append, resource_state
+    )
+
+    written = []
+    await _pump_child_to_client(
+        _FakeChild([_read_response("file:///hr/andrea.json", json.dumps({"salary": 71000}))]),
+        written.append,
+        resource_state,
+    )
+
+    assert "71000" not in written[0].decode()
+
+
+async def test_a_declared_resource_that_is_not_json_is_not_silently_forwarded(resource_state, capsys):
+    uri = "file:///hr/payroll.json"
+    await _pump_client_to_child(_reader([_read_request(uri)]), _FakeChild(), [].append, resource_state)
+
+    written = []
+    await _pump_child_to_client(
+        _FakeChild([_read_response(uri, "salary: 71000, in prose")]), written.append, resource_state
+    )
+
+    assert "did not return JSON" in capsys.readouterr().err

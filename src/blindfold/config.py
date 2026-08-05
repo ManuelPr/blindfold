@@ -1,6 +1,7 @@
 """Configuration loader for blindfold.yaml.
 
-Only the sections this release consumes (`schemas`, `tokens`, `storage`) are
+Only the sections this release consumes (`schemas`, `resources`, `tokens`,
+`storage`) are
 modeled. Unknown top-level keys are tolerated so future config additions do not
 break older Blindfold binaries.
 
@@ -11,13 +12,14 @@ than being ignored into a config that says one thing and does another.
 
 from __future__ import annotations
 
+import fnmatch
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from blindfold.core.rehydrator import PLACEHOLDER_PROMPT
-from blindfold.core.tokenizer import SchemaField, validate_path
+from blindfold.core.tokenizer import SchemaField, path_segments, validate_path
 from blindfold.ports.token_store import TokenStore
 
 
@@ -38,6 +40,38 @@ class SensitiveFieldConfig(BaseModel):
 
 class ToolSchemaConfig(BaseModel):
     sensitive_fields: list[SensitiveFieldConfig] = []
+
+    @model_validator(mode="after")
+    def _reject_overlapping_paths(self) -> ToolSchemaConfig:
+        """Two declarations covering the same value corrupt each other.
+
+        The tokenizer walks the fields in order, so a path declared twice
+        tokenizes its own placeholder the second time round: the vault ends up
+        holding a token whose value is another token, and rehydration renders a
+        placeholder to the user instead of the value. Same for a path that
+        contains another — the outer one swallows an already-tokenized subtree.
+
+        Both are configuration mistakes with silent, confusing symptoms, and
+        both are visible before anything runs.
+        """
+        seen: list[tuple[str, list]] = []
+        for field in self.sensitive_fields:
+            segments = path_segments(field.path)
+            for other_path, other_segments in seen:
+                if segments == other_segments:
+                    raise ValueError(
+                        f"path {field.path!r} is declared twice; the second declaration "
+                        f"would tokenize the first one's placeholder"
+                    )
+                inner, outer = sorted((segments, other_segments), key=len)
+                if outer[: len(inner)] == inner:
+                    raise ValueError(
+                        f"paths {other_path!r} and {field.path!r} overlap — one contains "
+                        f"the other, so tokenizing both would nest a placeholder inside a "
+                        f"hidden value. Declare the outer one only, or narrow them."
+                    )
+            seen.append((field.path, segments))
+        return self
 
 
 class TokensConfig(BaseModel):
@@ -74,6 +108,9 @@ class StorageConfig(BaseModel):
 class BlindfoldConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
     schemas: dict[str, ToolSchemaConfig] = {}
+    #: Keyed by URI glob rather than by name, because that is what a resource
+    #: has. `file:///hr/*.json` and `db://payroll/**` both work.
+    resources: dict[str, ToolSchemaConfig] = {}
     tokens: TokensConfig = TokensConfig()
     storage: StorageConfig = StorageConfig()
 
@@ -153,3 +190,29 @@ def schema_fields_for(config: BlindfoldConfig, tool_name: str) -> list[SchemaFie
         SchemaField(path=f.path, semantic_type=f.semantic_type, unit=f.unit)
         for f in tool.sensitive_fields
     ]
+
+
+def schema_fields_for_resource(config: BlindfoldConfig, uri: str) -> list[SchemaField]:
+    """Protected paths for a resource URI, merged over every pattern it matches.
+
+    Patterns are globs, so more than one can match a URI, and two of them can
+    name the same path. That is the overlap ToolSchemaConfig refuses statically
+    — but here it depends on the URI, so it cannot be caught at load and has to
+    be resolved now. Later declarations covering ground an earlier one already
+    covers are dropped rather than allowed to tokenize each other's
+    placeholders.
+    """
+    merged: list[SchemaField] = []
+    kept: list[list] = []
+    for pattern in sorted(config.resources):
+        if not fnmatch.fnmatch(uri, pattern):
+            continue
+        for field in config.resources[pattern].sensitive_fields:
+            segments = path_segments(field.path)
+            if any(segments[: len(k)] == k or k[: len(segments)] == segments for k in kept):
+                continue
+            kept.append(segments)
+            merged.append(
+                SchemaField(path=field.path, semantic_type=field.semantic_type, unit=field.unit)
+            )
+    return merged

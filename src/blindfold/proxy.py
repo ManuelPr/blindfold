@@ -22,7 +22,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, BinaryIO
 
-from blindfold.config import BlindfoldConfig, build_token_store, load_config, schema_fields_for
+from blindfold.config import (
+    BlindfoldConfig,
+    build_token_store,
+    load_config,
+    schema_fields_for,
+    schema_fields_for_resource,
+)
 from blindfold.core.policy import SessionBoundPolicy
 from blindfold.core.rehydrator import rehydrate
 from blindfold.core.tokenizer import describe_schema, tokenize_result
@@ -45,6 +51,7 @@ class ProxyState:
     config: BlindfoldConfig
     session_id: str
     pending_calls: dict[Any, str] = field(default_factory=dict)  # jsonrpc id -> tool name
+    pending_reads: dict[Any, str] = field(default_factory=dict)  # jsonrpc id -> resource uri
 
     @property
     def ttl_seconds(self) -> int:
@@ -134,6 +141,11 @@ async def _pump_client_to_child(read_line, child, write_client, state: ProxyStat
                 await asyncio.to_thread(_handle_blindfold_compute, msg, write_client, state)
                 continue
             state.pending_calls[msg.get("id")] = params.get("name")
+        elif method == "resources/read":
+            # Resources carry data just like tool results do, and used to pass
+            # through untouched — a server exposing salaries as a resource got
+            # no protection at all.
+            state.pending_reads[msg.get("id")] = ((msg.get("params") or {}).get("uri")) or ""
 
         child.stdin.write(line)
         await child.stdin.drain()
@@ -166,6 +178,8 @@ async def _pump_child_to_client(child, write_client, state: ProxyState) -> None:
             if msg_id in state.pending_calls:
                 tool_name = state.pending_calls.pop(msg_id)
                 _tokenize_tool_call_result(msg, tool_name, state)
+            elif msg_id in state.pending_reads:
+                _tokenize_resource_read(msg, state.pending_reads.pop(msg_id), state)
 
         write_client((json.dumps(msg) + "\n").encode("utf-8"))
 
@@ -201,6 +215,40 @@ def _tokenize_tool_call_result(msg: dict, tool_name: str, state: ProxyState) -> 
             continue
         tokenized = tokenize_result(payload, tool_name, fields, state.store, state.session_id, ttl)
         content[i] = {"type": "text", "text": json.dumps(tokenized)}
+
+
+def _tokenize_resource_read(msg: dict, requested_uri: str, state: ProxyState) -> None:
+    contents = (msg.get("result") or {}).get("contents") or []
+    now = datetime.now(tz=timezone.utc)
+    ttl = now + timedelta(seconds=state.ttl_seconds)
+    for part in contents:
+        if not isinstance(part, dict):
+            continue
+        # Each returned part names its own URI; the request URI is the fallback
+        # for servers that leave it out.
+        uri = part.get("uri") or requested_uri
+        fields = schema_fields_for_resource(state.config, uri)
+        if not fields:
+            continue
+        text = part.get("text")
+        if not isinstance(text, str):
+            # A blob, or no text at all. Declared and unprotectable is worth
+            # saying out loud rather than passing along.
+            print(
+                f"[blindfold] {uri} declares protected paths but returned no text part",
+                file=sys.stderr,
+            )
+            continue
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            print(
+                f"[blindfold] {uri} declares protected paths but did not return JSON",
+                file=sys.stderr,
+            )
+            continue
+        tokenized = tokenize_result(payload, uri, fields, state.store, state.session_id, ttl)
+        part["text"] = json.dumps(tokenized)
 
 
 def _handle_rehydrate(msg: dict, write_client, state: ProxyState) -> None:

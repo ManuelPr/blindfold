@@ -14,6 +14,7 @@ from blindfold.config import (
     TokensConfig,
     load_config,
     schema_fields_for,
+    schema_fields_for_resource,
 )
 from blindfold.core.rehydrator import PLACEHOLDER_PROMPT
 from blindfold.core.sqlite_store import SQLiteTokenStore, VaultKeyError
@@ -267,3 +268,90 @@ def test_prompt_fragment_is_importable_from_the_package_root():
     assert top_level_fn is describe_config
     assert "VERBATIM" in top_level
     assert "blindfold_compute" in top_level
+
+
+# --- declarations that would corrupt each other ---------------------------
+#
+# Found while designing the resources section: the tokenizer walks fields in
+# order, so a path declared twice tokenizes its own placeholder the second time
+# round. The vault ends up holding a token whose value is another token, and
+# the user reads a placeholder instead of a value.
+
+
+def test_the_same_path_twice_is_refused(tmp_path: Path):
+    with pytest.raises(ValidationError) as ei:
+        load_config(
+            _write(
+                tmp_path,
+                "schemas:\n  t:\n    sensitive_fields:\n"
+                "      - path: $.salary\n      - path: $.salary\n",
+            )
+        )
+    assert "declared twice" in str(ei.value)
+
+
+def test_a_path_containing_another_is_refused(tmp_path: Path):
+    with pytest.raises(ValidationError) as ei:
+        load_config(
+            _write(
+                tmp_path,
+                "schemas:\n  t:\n    sensitive_fields:\n"
+                "      - path: $.employee\n      - path: $.employee.salary\n",
+            )
+        )
+    assert "overlap" in str(ei.value)
+
+
+def test_sibling_paths_are_fine(tmp_path: Path):
+    cfg = load_config(
+        _write(
+            tmp_path,
+            "schemas:\n  t:\n    sensitive_fields:\n"
+            "      - path: $.employee.salary\n      - path: $.employee.iban\n",
+        )
+    )
+    assert len(cfg.schemas["t"].sensitive_fields) == 2
+
+
+# --- resources ------------------------------------------------------------
+
+
+def test_resource_patterns_match_by_glob(tmp_path: Path):
+    cfg = load_config(
+        _write(
+            tmp_path,
+            'resources:\n  "file:///hr/*.json":\n    sensitive_fields:\n      - path: $.salary\n',
+        )
+    )
+    assert [f.path for f in schema_fields_for_resource(cfg, "file:///hr/payroll.json")] == ["$.salary"]
+    assert schema_fields_for_resource(cfg, "file:///public/x.json") == []
+
+
+def test_several_matching_patterns_are_merged(tmp_path: Path):
+    cfg = load_config(
+        _write(
+            tmp_path,
+            'resources:\n'
+            '  "file:///hr/*.json":\n    sensitive_fields:\n      - path: $.salary\n'
+            '  "file:///hr/payroll.json":\n    sensitive_fields:\n      - path: $.iban\n',
+        )
+    )
+    assert {f.path for f in schema_fields_for_resource(cfg, "file:///hr/payroll.json")} == {
+        "$.salary",
+        "$.iban",
+    }
+
+
+def test_overlapping_patterns_do_not_declare_the_same_path_twice(tmp_path: Path):
+    # Two globs can name one path for one URI. That overlap cannot be caught at
+    # load — it depends on the URI — so it is resolved here instead of being
+    # allowed to tokenize a placeholder.
+    cfg = load_config(
+        _write(
+            tmp_path,
+            'resources:\n'
+            '  "file:///hr/*.json":\n    sensitive_fields:\n      - path: $.salary\n'
+            '  "file:///hr/payroll.json":\n    sensitive_fields:\n      - path: $.salary\n',
+        )
+    )
+    assert [f.path for f in schema_fields_for_resource(cfg, "file:///hr/payroll.json")] == ["$.salary"]

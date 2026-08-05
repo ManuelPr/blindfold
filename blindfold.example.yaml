@@ -8,6 +8,14 @@ schemas:
         semantic_type: salary
         unit: EUR/year
 
+# MCP resources carry data too, and are keyed by URI rather than by name.
+# resources:
+#   "file:///hr/*.json":
+#     sensitive_fields:
+#       - path: $.salary
+#         semantic_type: salary
+#         unit: EUR/year
+
 tokens:
   default_ttl: 3600
 

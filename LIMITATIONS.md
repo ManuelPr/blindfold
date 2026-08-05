@@ -130,9 +130,11 @@ Everything below is a current-release gap. All of these are fixable and are call
 
 - ~~**Blind compute blocked the whole proxy.**~~ **Closed.** `handle_blindfold_compute` ran inline in the async pump and the sandbox is synchronous, so for the length of a computation — up to the 5-second timeout — the proxy forwarded nothing in either direction. It now runs in a worker thread, which is why `SQLiteTokenStore` holds a reentrant lock and opens its connection with `check_same_thread=False`.
 
-- **[Mode A only] Only `tools/call` and `tools/list` are inspected.** `resources/*` and `prompts/*` pass through untouched, so an MCP server that exposes sensitive data as a resource is **not protected at all** by the proxy. This is not a bug so much as an unstated scope: the config keys schemas by tool name, and a resource has a URI rather than a tool name.
+- ~~**[Mode A only] `resources/*` passes through untouched.**~~ **Closed.** A server exposing salaries as a resource rather than as a tool used to get no protection at all. The proxy now tracks `resources/read` requests and tokenizes the returned contents, driven by a `resources:` config section keyed by **URI glob** — `file:///hr/*.json` — because a URI is what a resource has instead of a name. The URI on the returned part wins over the requested one, so a template read answered with a concrete URI still matches.
 
-  **Fix:** needs a config shape for resources before it needs code — most likely schemas keyed by URI pattern. Until then, if your server exposes sensitive resources, use Mode B or Mode C, where every result passes through the same path.
+  A declared resource that comes back as a blob, or as text that is not JSON, is reported on the operator's stderr. It is still forwarded, because the proxy does not rewrite what it cannot parse — so that is a warning, not a guarantee.
+
+- **[Mode A only] `prompts/*` is still not inspected.** Prompt templates are instructions rather than API data and nothing can be declared against them. If your server puts sensitive values inside prompt templates, the proxy will not find them.
 - **CLI proxy is stdio MCP only. [Mode A only]** The `blindfold -- <cmd>` CLI wraps a single downstream stdio MCP server. No HTTP proxy mode for REST APIs, no wrapping of remote/SSE MCP servers. Mode B (in-process library) has no transport concept — it plugs into any LLM SDK loop directly, MCP or not.
 - **Cross-platform CI missing.** Developed and tested on Windows. Linux/macOS should work but there is no CI yet to confirm.
 
@@ -165,6 +167,9 @@ The subprocess sandbox is the one place where real values meet code the model wr
 - ~~**Unsupported path syntax fails silently.**~~ **Closed**, and the original description of it was too kind. `$..salary` did not merely match nothing: it was *reinterpreted* as `$.salary`, so it matched a top-level field, missed every nested one, and still minted tokens — leaving a config that looked like it worked. `$.items[*` was accepted as if the bracket had been closed, and `$.a..b` became `$.a.b`. Filters and slices did raise, but only at the first tool call, with `invalid literal for int()`.
 
   Paths are now validated where a `SchemaField` is born: at config load through a Pydantic validator, and in the dataclass itself so Mode B gets the same guarantee without the YAML. Errors name the offending subscript and, for recursive descent, what the path was silently being read as. Note the distinction that is deliberately preserved: a path that *does not match this particular response* is still a silent no-op — defensive declaration stays free. What is refused is a path that could never mean what its author wrote.
+
+- **Overlapping declarations used to corrupt each other; they are now refused at load.** The tokenizer walks a tool's fields in order, so the same path declared twice tokenized its own placeholder the second time round — the vault held a token whose value was another token, and the user read `⟦tok_…⟧` where the value should have been. A path containing another (`$.employee` alongside `$.employee.salary`) did the same to a subtree. Both are rejected with a message naming the pair. For resources the overlap depends on the URI and cannot be caught statically, so matching globs are merged with the redundant declaration dropped.
+
 - **Non-JSON tool responses are passed through untokenized.** Free-form text hits the model unchanged. Structured JSON responses are required for protection to kick in.
 - **Non-text MCP content parts are passed through untokenized.** Image/resource/blob parts are not protected.
 - **No collective (table) tokens.** A tool returning 500 rows with 5 sensitive fields mints 2,500 individual tokens.

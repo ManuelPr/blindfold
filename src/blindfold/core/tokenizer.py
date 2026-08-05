@@ -145,6 +145,19 @@ def _infer_dtype(value: Any) -> str:
     return "object"
 
 
+def path_segments(path: str) -> list[str | int]:
+    """The parsed segments of a path, for callers that need to compare two.
+
+    `$.a[*].b` -> ['a', '*', 'b']. Used by the config to spot declarations that
+    overlap, which the tokenizer cannot detect on its own because it sees one
+    field at a time.
+    """
+    body = path[1:] if path.startswith("$") else path
+    if body.startswith("."):
+        body = body[1:]
+    return _tokenize_path(body)
+
+
 def _resolve_paths(payload: Any, path: str) -> list[tuple[list[str | int], Any]]:
     if not path.startswith("$"):
         raise ValueError(f"path must start with '$': {path!r}")

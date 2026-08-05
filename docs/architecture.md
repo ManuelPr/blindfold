@@ -279,6 +279,7 @@ The wire orchestrator. `run_proxy(downstream_cmd, config_path)`:
    - **Child → client**: reads a line from the child's stdout, and:
      - If it's a `tools/list` response → append `build_tool_definition()` to the tools array.
      - If it's a `tools/call` response with a recorded ID → call the tokenizer on any `text` content, matching against the config.
+     - If it's a `resources/read` response with a recorded ID → same, matching the returned part's URI against the `resources:` globs. Resources carry data exactly as tool results do, and used to pass through untouched.
      - Forward the (possibly-mutated) message to our stdout.
 5. Shuts down cleanly when either side closes.
 
