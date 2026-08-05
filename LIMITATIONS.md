@@ -123,6 +123,14 @@ Everything below is a current-release gap. All of these are fixable and are call
   **Fix:** not needed today — one proxy process, one child, one session. It becomes a question with the multi-user server mode, which does not exist. SQLite in WAL mode handles multi-process access on its own, so the locking work often assumed to come with persistence largely does not.
 
 ### Transport
+
+- ~~**A JSON-RPC batch crashed the proxy.**~~ **Closed.** A batch is a JSON array; the pump called `.get()` on it, raised `AttributeError`, killed its task, and the connection wedged with no error visible to the client. Batches are now forwarded untouched — Blindfold does not inspect them, and saying so is more honest than pretending to.
+
+- ~~**Blind compute blocked the whole proxy.**~~ **Closed.** `handle_blindfold_compute` ran inline in the async pump and the sandbox is synchronous, so for the length of a computation — up to the 5-second timeout — the proxy forwarded nothing in either direction. It now runs in a worker thread, which is why `SQLiteTokenStore` holds a reentrant lock and opens its connection with `check_same_thread=False`.
+
+- **[Mode A only] Only `tools/call` and `tools/list` are inspected.** `resources/*` and `prompts/*` pass through untouched, so an MCP server that exposes sensitive data as a resource is **not protected at all** by the proxy. This is not a bug so much as an unstated scope: the config keys schemas by tool name, and a resource has a URI rather than a tool name.
+
+  **Fix:** needs a config shape for resources before it needs code — most likely schemas keyed by URI pattern. Until then, if your server exposes sensitive resources, use Mode B or Mode C, where every result passes through the same path.
 - **CLI proxy is stdio MCP only. [Mode A only]** The `blindfold -- <cmd>` CLI wraps a single downstream stdio MCP server. No HTTP proxy mode for REST APIs, no wrapping of remote/SSE MCP servers. Mode B (in-process library) has no transport concept — it plugs into any LLM SDK loop directly, MCP or not.
 - **Cross-platform CI missing.** Developed and tested on Windows. Linux/macOS should work but there is no CI yet to confirm.
 

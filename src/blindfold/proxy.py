@@ -112,6 +112,14 @@ async def _pump_client_to_child(read_line, child, write_client, state: ProxyStat
         except json.JSONDecodeError as exc:
             print(f"[blindfold] bad JSON from client: {exc!r}", file=sys.stderr)
             continue
+        if not isinstance(msg, dict):
+            # A JSON-RPC batch is an array. Blindfold does not inspect batches;
+            # forwarding them untouched is honest, and better than the
+            # AttributeError that used to kill this task and wedge the pipe.
+            print("[blindfold] forwarding a JSON-RPC batch untouched", file=sys.stderr)
+            child.stdin.write(line)
+            await child.stdin.drain()
+            continue
 
         method = msg.get("method")
         if method == "blindfold/rehydrate":
@@ -120,7 +128,10 @@ async def _pump_client_to_child(read_line, child, write_client, state: ProxyStat
         if method == "tools/call":
             params = msg.get("params") or {}
             if params.get("name") == BLINDFOLD_COMPUTE_TOOL_NAME:
-                _handle_blindfold_compute(msg, write_client, state)
+                # In a worker thread: the sandbox blocks for up to its timeout,
+                # and doing that inline stopped the proxy forwarding anything
+                # in either direction for those seconds.
+                await asyncio.to_thread(_handle_blindfold_compute, msg, write_client, state)
                 continue
             state.pending_calls[msg.get("id")] = params.get("name")
 
@@ -138,6 +149,10 @@ async def _pump_child_to_client(child, write_client, state: ProxyState) -> None:
             msg = json.loads(line)
         except json.JSONDecodeError as exc:
             print(f"[blindfold] bad JSON from child: {exc!r}", file=sys.stderr)
+            write_client(line)
+            continue
+        if not isinstance(msg, dict):
+            print("[blindfold] forwarding a JSON-RPC batch untouched", file=sys.stderr)
             write_client(line)
             continue
 

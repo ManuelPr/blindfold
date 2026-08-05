@@ -175,3 +175,29 @@ async def test_tool_result_carries_no_extra_parts(proxy_subprocess):
 
     assert len(content) == 1, "the explanation lives on the tool, not on every result"
     assert "62000" not in content[0]["text"]
+
+
+async def test_a_jsonrpc_batch_does_not_wedge_the_proxy(proxy_subprocess):
+    # A batch is a JSON array. The pump called .get() on it, raised
+    # AttributeError, and the task died — after which nothing was forwarded in
+    # either direction and the client just hung.
+    proc = proxy_subprocess
+    nid = await _initialize(proc, 1)
+
+    batch = [{"jsonrpc": "2.0", "id": 900, "method": "tools/list", "params": {}}]
+    proc.stdin.write((json.dumps(batch) + "\n").encode("utf-8"))
+    await proc.stdin.drain()
+
+    # The proxy must still be serving afterwards. The downstream server may or
+    # may not answer the batch; what matters is that this request gets through.
+    await _send(proc, {
+        "jsonrpc": "2.0", "id": nid, "method": "tools/call",
+        "params": {"name": "get_salary", "arguments": {"name": "Andrea Tuscano"}},
+    })
+    for _ in range(3):
+        resp = await _recv(proc)
+        if resp.get("id") == nid:
+            break
+    else:
+        raise AssertionError("proxy stopped answering after a batch")
+    assert TOKEN_RE.fullmatch(json.loads(resp["result"]["content"][0]["text"])["salary"])

@@ -197,3 +197,33 @@ def test_sqlite_creates_missing_parent_directories(tmp_path):
         assert (tmp_path / "nested" / "dir" / "vault.db").exists()
     finally:
         store.close()
+
+
+@freeze_time(NOW)
+def test_sqlite_survives_concurrent_use_from_threads(tmp_path):
+    # The proxy runs blind compute in a worker thread, so the connection is
+    # touched from a thread that did not create it.
+    import threading
+
+    store = SQLiteTokenStore(tmp_path / "vault.db")
+    errors = []
+
+    def hammer(offset: int) -> None:
+        try:
+            for i in range(25):
+                token = f"⟦tok_{offset:04d}{i:04d}⟧"
+                store.put(_rec(token, value=offset * 1000 + i))
+                assert store.resolve(token) == offset * 1000 + i
+        except Exception as exc:  # pragma: no cover - only on regression
+            errors.append(exc)
+
+    threads = [threading.Thread(target=hammer, args=(n,)) for n in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    try:
+        assert errors == []
+        assert len(store.find_by_session("s")) == 100
+    finally:
+        store.close()

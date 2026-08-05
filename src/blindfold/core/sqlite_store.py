@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -62,7 +63,14 @@ class SQLiteTokenStore(TokenStore):
         # isolation_level=None: autocommit. Every method here is a single
         # statement or an explicit transaction, and a vault that loses the last
         # write on a crash is worse than one that does not.
-        self._conn = sqlite3.connect(str(self._path), isolation_level=None)
+        # check_same_thread=False plus an explicit lock: the proxy runs blind
+        # compute in a worker thread, so the connection outlives the thread
+        # that made it. Every statement below goes through the lock.
+        # Reentrant: put() sweeps, resolve() goes through get().
+        self._lock = threading.RLock()
+        self._conn = sqlite3.connect(
+            str(self._path), isolation_level=None, check_same_thread=False
+        )
         self._conn.row_factory = sqlite3.Row
         # WAL is what makes two processes on one file safe, which is the whole
         # reason this class exists. busy_timeout turns a concurrent write from
@@ -76,7 +84,11 @@ class SQLiteTokenStore(TokenStore):
     # --- TokenStore -------------------------------------------------------
 
     def put(self, record: VaultRecord) -> None:
-        self._sweep_if_due()
+        with self._lock:
+            self._sweep_if_due()
+            self._put(record)
+
+    def _put(self, record: VaultRecord) -> None:
         self._conn.execute(
             "INSERT OR REPLACE INTO records "
             "(token, value, dtype, semantic_type, unit, session_id, created_at, "
@@ -111,10 +123,11 @@ class SQLiteTokenStore(TokenStore):
         )
 
     def get(self, token: str) -> VaultRecord | None:
-        row = self._conn.execute(
-            "SELECT * FROM records WHERE token = ? AND ttl_epoch > ?",
-            (token, self._now().timestamp()),
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM records WHERE token = ? AND ttl_epoch > ?",
+                (token, self._now().timestamp()),
+            ).fetchone()
         return _from_row(row) if row is not None else None
 
     def resolve(self, token: str) -> Any | None:
@@ -122,13 +135,18 @@ class SQLiteTokenStore(TokenStore):
         return record.value if record is not None else None
 
     def find_by_session(self, session_id: str) -> list[VaultRecord]:
-        rows = self._conn.execute(
-            "SELECT * FROM records WHERE session_id = ? AND ttl_epoch > ?",
-            (session_id, self._now().timestamp()),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM records WHERE session_id = ? AND ttl_epoch > ?",
+                (session_id, self._now().timestamp()),
+            ).fetchall()
         return [_from_row(r) for r in rows]
 
     def invalidate_cascade(self, token: str) -> int:
+        with self._lock:
+            return self._invalidate_cascade(token)
+
+    def _invalidate_cascade(self, token: str) -> int:
         exists = self._conn.execute(
             "SELECT 1 FROM records WHERE token = ?", (token,)
         ).fetchone()
@@ -161,13 +179,15 @@ class SQLiteTokenStore(TokenStore):
 
     def purge_expired(self, now: datetime | None = None) -> int:
         cutoff = (now if now is not None else self._now()).timestamp()
-        cur = self._conn.execute("DELETE FROM records WHERE ttl_epoch <= ?", (cutoff,))
-        return cur.rowcount
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM records WHERE ttl_epoch <= ?", (cutoff,))
+            return cur.rowcount
 
     # --- housekeeping -----------------------------------------------------
 
     def close(self) -> None:
-        self._conn.close()
+        with self._lock:
+            self._conn.close()
 
     def _sweep_if_due(self) -> None:
         now = self._now()
