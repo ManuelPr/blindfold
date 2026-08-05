@@ -26,6 +26,30 @@ class Policy:
 
 
 @dataclass(frozen=True)
+class Column:
+    name: str
+    semantic_type: str | None = None
+    unit: str | None = None
+
+
+@dataclass(frozen=True)
+class TableSchema:
+    """What the model is told about a hidden table: names, never values."""
+
+    columns: tuple[Column, ...] = ()
+
+    def column_names(self) -> tuple[str, ...]:
+        return tuple(c.name for c in self.columns)
+
+    def describe(self) -> str:
+        parts = []
+        for column in self.columns:
+            meta = ", ".join(m for m in (column.semantic_type, column.unit) if m)
+            parts.append(f"{column.name}{f' ({meta})' if meta else ''}")
+        return ", ".join(parts)
+
+
+@dataclass(frozen=True)
 class VaultRecord:
     token: str
     value: Any
@@ -37,6 +61,10 @@ class VaultRecord:
     ttl: datetime
     lineage: Lineage
     policy: Policy
+    #: Set only on collective tokens. Carried on the record rather than looked
+    #: up in the config at query time, so a config edit cannot change what an
+    #: already-minted token means.
+    table: TableSchema | None = None
 
 
 def compose_policy(inputs: list[Policy]) -> Policy:

@@ -40,7 +40,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from blindfold.core.lineage import Lineage, Policy, VaultRecord
+from blindfold.core.lineage import Column, Lineage, Policy, TableSchema, VaultRecord
 from blindfold.ports.token_store import TokenStore
 
 _SCHEMA = """
@@ -55,7 +55,8 @@ CREATE TABLE IF NOT EXISTS records (
     ttl           TEXT NOT NULL,   -- ISO 8601, for exact reconstruction
     ttl_epoch     REAL NOT NULL,   -- seconds, for range queries
     lineage       TEXT NOT NULL,   -- JSON
-    policy        TEXT NOT NULL    -- JSON
+    policy        TEXT NOT NULL,   -- JSON
+    table_schema  TEXT             -- JSON, collective tokens only
 );
 CREATE INDEX IF NOT EXISTS idx_records_session ON records(session_id);
 CREATE INDEX IF NOT EXISTS idx_records_ttl ON records(ttl_epoch);
@@ -138,8 +139,8 @@ class SQLiteTokenStore(TokenStore):
         self._conn.execute(
             "INSERT OR REPLACE INTO records "
             "(token, value, dtype, semantic_type, unit, session_id, created_at, "
-            " ttl, ttl_epoch, lineage, policy) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            " ttl, ttl_epoch, lineage, policy, table_schema) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 record.token,
                 self._seal(record.token, record.value),
@@ -164,6 +165,14 @@ class SQLiteTokenStore(TokenStore):
                         "reveal_to_frontend": record.policy.reveal_to_frontend,
                         "can_be_input_to_compute": record.policy.can_be_input_to_compute,
                     }
+                ),
+                None
+                if record.table is None
+                else json.dumps(
+                    [
+                        {"name": c.name, "semantic_type": c.semantic_type, "unit": c.unit}
+                        for c in record.table.columns
+                    ]
                 ),
             ),
         )
@@ -321,5 +330,10 @@ def _from_row_with(open_value, row: sqlite3.Row) -> VaultRecord:
         policy=Policy(
             reveal_to_frontend=policy["reveal_to_frontend"],
             can_be_input_to_compute=policy["can_be_input_to_compute"],
+        ),
+        table=None
+        if row["table_schema"] is None
+        else TableSchema(
+            columns=tuple(Column(**c) for c in json.loads(row["table_schema"]))
         ),
     )

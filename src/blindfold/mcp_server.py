@@ -43,6 +43,11 @@ from blindfold.tools.blindfold_compute import (
     build_tool_definition,
     handle_blindfold_compute,
 )
+from blindfold.tools.blindfold_table import (
+    BLINDFOLD_TABLE_TOOL_NAME,
+    build_tool_definition as build_table_tool_definition,
+    handle_blindfold_table,
+)
 
 
 class SharedVaultRequired(RuntimeError):
@@ -90,11 +95,29 @@ def compute(
     )
 
 
+def query_table(
+    arguments: dict[str, Any],
+    *,
+    config: BlindfoldConfig,
+    store: TokenStore,
+    policy: DetokenizePolicy,
+) -> str:
+    """One table query, session inferred from the table token, as for compute."""
+    session_id = session_of_inputs([arguments.get("table")], store)
+    return handle_blindfold_table(
+        arguments,
+        store=store,
+        policy=policy,
+        session_id=session_id,
+        ttl_seconds=config.tokens.default_ttl,
+    )
+
+
 def build_server(config: BlindfoldConfig, store: TokenStore) -> Server:
     server = Server("blindfold")
     sandbox = SubprocessSandbox()
     policy = SessionBoundPolicy()
-    spec = build_tool_definition()
+    specs = [build_tool_definition(), build_table_tool_definition()]
 
     @server.list_tools()
     async def list_tools() -> list[Tool]:
@@ -104,10 +127,17 @@ def build_server(config: BlindfoldConfig, store: TokenStore) -> Server:
                 description=spec["description"],
                 inputSchema=spec["inputSchema"],
             )
+            for spec in specs
         ]
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
+        if name == BLINDFOLD_TABLE_TOOL_NAME:
+            try:
+                token = query_table(arguments, config=config, store=store, policy=policy)
+            except ValueError as exc:
+                return [TextContent(type="text", text=f"blindfold_table error: {exc}")]
+            return [TextContent(type="text", text=token)]
         if name != BLINDFOLD_COMPUTE_TOOL_NAME:
             raise ValueError(f"unknown tool: {name}")
         # ponytail: the sandbox runs synchronously, so a compute blocks this

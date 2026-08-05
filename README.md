@@ -91,13 +91,38 @@ The lineage DAG buys three things most redaction tools don't have:
 - **Cascading invalidation** — expire or delete a token and all its descendants go with it. Implemented as `invalidate_cascade`, but nothing in the runtime calls it yet: today it is an API for your code, not an automatic behavior.
 - **Policy inheritance** — a derived token inherits the *most restrictive* policy of its inputs, so sensitive data can't be laundered through a computation. This one is wired: `compose_policy` and `compose_ttl` run on every blind compute.
 
-### Collective tokens for structured data **[planned]**
+### Collective tokens for structured data
 
-*Not implemented.* Today a tool returning 50 records mints one token per declared field per record.
+A list declared under `tables:` comes back as **one** token, whatever its
+length, and the model is told the column names and what they mean. On 500
+employees x 5 sensitive fields:
 
-The design: one `table` token per structured result, whose schema (columns and types) is exposed to the model while the rows stay hidden. Blind-compute code operates on the whole table — filter, sort, aggregate — instead of enumerating tokens by hand.
+```
+individual tokens : 2500
+collective token  : 1
+the model sees    : {"employees": "⟦tok_a58cbaf0⟧"}
+```
 
-The cost of not having it is **not** context size (tokens replace values roughly one-for-one; measured at +3% on a 500-row response). It is that the model cannot meaningfully operate on a few hundred unordered opaque strings: it has no way to write `sort by salary` over them. Blind compute stays practical for a handful of tokens and degrades from there. As a second benefit, a fixed set of table operations would close the side channel described under [Threat model](#threat-model--limitations), which arbitrary Python cannot.
+The cost of not having this was never context size — tokens are 14 characters
+and *replace* the values they hide, measured at +3% on that same response. It
+was that the model could not operate on the result at all: a few hundred
+unordered opaque strings carry no structure, so it cannot sort them or even
+tell they are comparable quantities.
+
+It queries the token with `blindfold_table`, using a fixed set of operations
+rather than code — `filter`, `sort_by`, `limit`, `select`, `sum`, `mean`,
+`min`, `max`, `count` — and gets another token back:
+
+```
+model  -> filter dept == Eng, sort by salary desc, limit 3, select name, salary
+result -> ⟦tok_dc708f10⟧
+user   -> [{"name": "p499", "salary": 48463}, …]
+```
+
+That restriction is the feature, not a compromise. Arbitrary Python lets a
+model write something whose *success* depends on a hidden value and read one
+bit per call; a fixed operation set cannot express it. So this path executes no
+model-written code and **needs no sandbox at all**.
 
 ### Schema-driven tokenization
 
@@ -216,6 +241,15 @@ schemas:
       - path: $.salary
         semantic_type: salary
         unit: EUR/year
+
+  hr_api.list_employees:
+    tables:                   # a whole list behind one token
+      - path: $.employees
+        columns:              # what the model may query on
+          - name: salary
+            semantic_type: salary
+            unit: EUR/year
+          - name: dept
 
 resources:                  # MCP resources, keyed by URI glob
   "file:///hr/*.json":
@@ -360,11 +394,12 @@ Ordered by what the current release most needs, not by ambition.
 - [x] **SQLite store** — a vault that survives a restart and can be shared between processes
 - [x] **Claude Code hooks** — tokenization and reveal without a proxy, and without placeholders reaching the user
 - [x] **Mode C completed** — session briefing so the model knows what the placeholders are, and an MCP server so it can compute on them
+- [x] **Collective (table) tokens** — one placeholder per list, queried by a fixed operation set; also the answer to the one-bit oracle
 - [x] **Encryption at rest** — AES-256-GCM, key from the environment, never from the config file
 - [x] **CI on Linux, macOS and Windows** — including the sandbox probes, so the documented behaviour is asserted per platform
 - [x] **Restricted builtins in the compute child** — the easy filesystem and network paths are gone without anyone installing Docker; not a boundary, a higher cost
 - [ ] Export the placeholder-preserving prompt fragment as a package constant
-- [ ] Collective (table) tokens + analytical compute over a fixed operation set — also the only thing that closes the one-bit oracle
+- [ ] Table joins, group-by and cross-table aggregation — the operations collective tokens do not have yet
 - [ ] Docker sandbox — the OS-level answer to network and filesystem, after the cheap in-process measures
 - [ ] HTTP proxy mode for plain REST APIs
 - [ ] Redis + Postgres adapters, webhook policy, audit log exporter

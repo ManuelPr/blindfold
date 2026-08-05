@@ -245,6 +245,14 @@ This raises the cost of an escape rather than preventing one. Reaching `object._
 
 [`LIMITATIONS.md`](../LIMITATIONS.md#sandboxing) has the full list, each entry marked with whether it can be closed and at what cost.
 
+### Collective tokens — [`src/blindfold/core/table.py`](../src/blindfold/core/table.py) and [`src/blindfold/tools/blindfold_table.py`](../src/blindfold/tools/blindfold_table.py)
+
+A list declared under `tables:` is replaced by **one** token whatever its length, and the record carries a `TableSchema` — column names, semantic types, units — so the token describes itself rather than depending on a config that may have changed since it was minted. The model is told those columns in the tool description and queries them with `blindfold_table`.
+
+`run_query` applies a fixed set of operations: `filter`, `sort_by`, `limit`, `select`, then optionally one of `sum`, `mean`, `min`, `max`, `count` last. A row result comes back as another table token carrying the columns that survived a `select`, so a query can be built in steps.
+
+**The invariant that makes this worth its cost:** no query may fail because of the data. Comparisons across types do not match rather than raising; sorting mixed types uses a total order; an aggregate over a column with no numbers returns nothing rather than erroring. `ValueError` is reserved for a malformed *query* — an unknown column, an operation out of place. This is what removes the one-bit oracle that arbitrary Python opens, and the reason this path executes no model-written code and runs no sandbox.
+
 ### `blindfold_compute` tool — [`src/blindfold/tools/blindfold_compute.py`](../src/blindfold/tools/blindfold_compute.py)
 
 The MCP tool the LLM actually calls. Two exports:
@@ -382,6 +390,7 @@ src/blindfold/
 │   ├── vault.py               # MemoryTokenStore
 │   ├── sqlite_store.py        # SQLiteTokenStore
 │   ├── tokenizer.py           # SchemaField + tokenize_result + JSONPath
+│   ├── table.py               # collective tokens: the query operations
 │   ├── rehydrator.py          # rehydrate + TOKEN_PATTERN
 │   └── policy.py              # SessionBoundPolicy
 ├── ports/
@@ -391,7 +400,8 @@ src/blindfold/
 ├── sandbox/
 │   └── subprocess_.py         # SubprocessSandbox
 └── tools/
-    └── blindfold_compute.py   # tool spec + handler
+    ├── blindfold_compute.py   # tool spec + handler
+    └── blindfold_table.py     # query a collective token, no sandbox
 ```
 
 Tests mirror the layout under `tests/unit/`, plus `tests/integration/test_proxy_forwarding.py` (spawns the real proxy) and `tests/e2e/test_demo_flow.py` (replays a canned transcript and asserts no leakage).

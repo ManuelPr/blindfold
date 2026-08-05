@@ -8,6 +8,18 @@ schemas:
         semantic_type: salary
         unit: EUR/year
 
+  # A list the model gets as ONE token, however long it is. The declared
+  # columns are what it may query on with blindfold_table — declare a column
+  # you want filtered or sorted even when it is not itself sensitive.
+  # hr_api.list_employees:
+  #   tables:
+  #     - path: $.employees
+  #       columns:
+  #         - name: salary
+  #           semantic_type: salary
+  #           unit: EUR/year
+  #         - name: dept
+
 # MCP resources carry data too, and are keyed by URI rather than by name.
 # resources:
 #   "file:///hr/*.json":

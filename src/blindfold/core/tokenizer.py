@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from blindfold.core.lineage import Lineage, Policy, VaultRecord
+from blindfold.core.lineage import Lineage, Policy, TableSchema, VaultRecord
 from blindfold.ports.token_store import TokenStore
 
 
@@ -86,9 +86,35 @@ def tokenize_result(
     store: TokenStore,
     session_id: str,
     ttl: datetime,
+    tables: list[tuple[str, TableSchema]] | None = None,
 ) -> Any:
     result = copy.deepcopy(payload)
     now = datetime.now(tz=timezone.utc)
+
+    for path, schema in tables or ():
+        for pointer, value in _resolve_paths(result, path):
+            if not isinstance(value, list):
+                # Declared as a table, came back as something else. Same rule as
+                # a path that did not match: this response simply does not have
+                # one. The config check already ruled out paths that never can.
+                continue
+            token = TokenStore.mint_token()
+            store.put(
+                VaultRecord(
+                    token=token,
+                    value=copy.deepcopy(value),
+                    dtype="table",
+                    semantic_type=None,
+                    unit=None,
+                    session_id=session_id,
+                    created_at=now,
+                    ttl=ttl,
+                    lineage=Lineage(op="tool_result", tool=tool_name, path=path),
+                    policy=Policy(),
+                    table=schema,
+                )
+            )
+            _set_by_pointer(result, pointer, token)
 
     for field in fields:
         for pointer, value in _resolve_paths(result, field.path):
@@ -109,6 +135,24 @@ def tokenize_result(
             _set_by_pointer(result, pointer, token)
 
     return result
+
+
+def describe_tables(tables: list[tuple[str, TableSchema]]) -> str | None:
+    """Tell the model a hidden table's columns, so it can write a query.
+
+    Without this a collective token is unusable: one opaque string with no
+    indication of what can be asked of it.
+    """
+    if not tables:
+        return None
+    lines = [f"  {path} — columns: {schema.describe()}" for path, schema in tables]
+    return (
+        "Blindfold: the lists at these paths come back as a single "
+        "⟦tok_XXXXXXXX⟧ placeholder each, hiding every row. You cannot read them. "
+        "Use the blindfold_table tool to filter, sort, aggregate or select over "
+        "one — it takes the placeholder and a list of operations, and returns "
+        "another placeholder.\n" + "\n".join(lines)
+    )
 
 
 def describe_schema(fields: list[SchemaField]) -> str | None:

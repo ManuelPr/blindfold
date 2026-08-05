@@ -59,9 +59,11 @@ result = 1 / 0 if resolve("⟦tok_…⟧") > 50000 else "ok"
 
 Error means "yes". About twenty of those recover an exact salary. Nothing in the sandbox prevents it, because nothing about that code is illegal — it is the tool being used exactly as specified, and no isolation technology (Docker included) hides from the caller whether a call succeeded.
 
-It is listed as by-design because the only thing that removes it is giving up arbitrary code: replacing the free-form Python of `blindfold_compute` with a fixed set of operations (filter, sort, aggregate over a collective token) whose control flow cannot depend on the values. That is a different deal, not a bug fix — worth making, and the collective-token work would make it, but it is a change of contract.
+It is listed as by-design because the only thing that removes it is giving up arbitrary code: replacing free-form Python with a fixed set of operations whose control flow cannot depend on the values. That is a change of contract rather than a bug fix — and it has now been made, as a second tool rather than a replacement.
 
-Two things do bound the damage today: the policy check runs per input token, so the model can only interrogate values it was already allowed to compute on; and each call is one bit, so extraction is visible in the call log as an obvious pattern of repeated compute calls on the same token. Log those calls if this concerns you.
+**There is now a path without it.** `blindfold_table` takes a fixed set of operations instead of code, and every well-formed query succeeds — comparisons across types do not match rather than raising, an empty aggregate returns nothing rather than erroring — so no failure carries a bit about the data. Where your data is a list, prefer a collective token and this tool; the oracle below applies only to `blindfold_compute`.
+
+Two things bound the damage for compute, which still runs arbitrary Python: the policy check runs per input token, so the model can only interrogate values it was already allowed to compute on; and each call is one bit, so extraction is visible in the call log as an obvious pattern of repeated compute calls on the same token. Log those calls if this concerns you.
 
 ### The user's prompt is not protected
 Blindfold intercepts **tool results**, not the user's original question. If the user types *"What is Andrea Tuscano's salary?"*, the name and the intent go to the LLM provider in cleartext. Only the tool response gets tokenized.
@@ -172,13 +174,11 @@ The subprocess sandbox is the one place where real values meet code the model wr
 
 - **Non-JSON tool responses are passed through untokenized.** Free-form text hits the model unchanged. Structured JSON responses are required for protection to kick in.
 - **Non-text MCP content parts are passed through untokenized.** Image/resource/blob parts are not protected.
-- **No collective (table) tokens.** A tool returning 500 rows with 5 sensitive fields mints 2,500 individual tokens.
+- ~~**No collective (table) tokens.**~~ **Closed.** A list declared under `tables:` becomes one token for the whole thing, and the model is told the column names and what they mean. Measured on 500 employees x 5 fields: 2,500 individual tokens before, **1** after, and the model can answer "top three by salary in Eng" — which it could not do at all with 2,500 opaque strings, having no way to sort them or even tell they were comparable.
 
-  The cost is worth stating precisely, because the obvious guess is wrong. It is **not** context size: tokens are 14 characters and *replace* the values they hide (an IBAN is 27, an email around 18), so a tokenized response is barely larger than the original — measured at +3% on 500 rows × 5 fields (84,186 → 86,906 characters). The cost is that the model **cannot operate on the result**. Several hundred unordered opaque strings carry no structure: the model cannot sort them, cannot tell they are comparable quantities, and to use `blindfold_compute` would have to enumerate every token by hand in its code. In practice it either processes a subset and reports a confident wrong answer, or gives up.
+  The query language is a fixed set of operations (`filter`, `sort_by`, `limit`, `select`, `sum`, `mean`, `min`, `max`, `count`) executed by Blindfold, not code. Results come back as new tokens, and a row result carries the columns that survived, so queries can be built up in steps. **This path runs no sandbox**, because no code the model wrote is ever executed.
 
-  This bites only when your tools return long lists; the threshold is a few dozen rows. Single-record lookups are unaffected.
-
-  **Fix: expensive — the largest item on the roadmap.** It touches the tokenizer, the vault, the sandbox, and cascading invalidation. It is also the only thing that closes the one-bit oracle described above, since a fixed operation set removes arbitrary control flow. Worth doing when a real workload needs it, not before.
+  What it does not do: aggregate across two tables, group by a column, or join. Those are the obvious next operations and none of them is in yet.
 
 - **No inbound prompt NER.** Only outbound tool-response tokenization.
 

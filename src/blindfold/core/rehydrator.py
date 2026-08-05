@@ -6,6 +6,7 @@ policy-denied become ``[redacted]``.
 
 from __future__ import annotations
 
+import json
 import re
 
 from blindfold.ports.policy import DetokenizeContext, DetokenizePolicy
@@ -32,6 +33,18 @@ it in the `SessionStart` briefing.
 """
 
 
+def _render(value: object) -> str:
+    """Scalars as themselves, containers as JSON.
+
+    `str()` on a list of rows gives a Python repr — single quotes, `True`,
+    `None` — which is not what a user asked for and not valid anything.
+    Collective tokens made that reachable.
+    """
+    if isinstance(value, (str, int, float)):
+        return str(value)
+    return json.dumps(value, ensure_ascii=False)
+
+
 def rehydrate(
     text: str,
     session_id: str,
@@ -47,6 +60,6 @@ def rehydrate(
             return "[unknown token]"
         if not policy.can_reveal(ctx, record):
             return "[redacted]"
-        return str(record.value)
+        return _render(record.value)
 
     return TOKEN_PATTERN.sub(_sub, text)

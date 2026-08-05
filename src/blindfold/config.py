@@ -18,6 +18,7 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
+from blindfold.core.lineage import Column, TableSchema
 from blindfold.core.rehydrator import PLACEHOLDER_PROMPT
 from blindfold.core.tokenizer import SchemaField, path_segments, validate_path
 from blindfold.ports.token_store import TokenStore
@@ -38,8 +39,46 @@ class SensitiveFieldConfig(BaseModel):
         return path
 
 
+class ColumnConfig(BaseModel):
+    name: str
+    semantic_type: str | None = None
+    unit: str | None = None
+
+
+class TableConfig(BaseModel):
+    """A list the model gets as one token, with a queryable column schema.
+
+    The declared columns are what the model may *reference*, not what is
+    hidden — the whole list is hidden either way. Declare a column you want it
+    to filter or sort on even when that column is not itself sensitive.
+    """
+
+    path: str
+    columns: list[ColumnConfig]
+
+    @field_validator("path")
+    @classmethod
+    def _reject_unsupported_syntax(cls, path: str) -> str:
+        validate_path(path)
+        return path
+
+    @field_validator("columns")
+    @classmethod
+    def _needs_at_least_one_column(cls, columns: list[ColumnConfig]) -> list[ColumnConfig]:
+        if not columns:
+            raise ValueError(
+                "a table needs at least one column; without one the model has nothing "
+                "to query and the token is unusable"
+            )
+        names = [c.name for c in columns]
+        if len(set(names)) != len(names):
+            raise ValueError(f"duplicate column names: {names}")
+        return columns
+
+
 class ToolSchemaConfig(BaseModel):
     sensitive_fields: list[SensitiveFieldConfig] = []
+    tables: list[TableConfig] = []
 
     @model_validator(mode="after")
     def _reject_overlapping_paths(self) -> ToolSchemaConfig:
@@ -55,22 +94,25 @@ class ToolSchemaConfig(BaseModel):
         both are visible before anything runs.
         """
         seen: list[tuple[str, list]] = []
-        for field in self.sensitive_fields:
-            segments = path_segments(field.path)
+        declared = [(f.path, "path") for f in self.sensitive_fields] + [
+            (t.path, "table") for t in self.tables
+        ]
+        for path, _kind in declared:
+            segments = path_segments(path)
             for other_path, other_segments in seen:
                 if segments == other_segments:
                     raise ValueError(
-                        f"path {field.path!r} is declared twice; the second declaration "
+                        f"path {path!r} is declared twice; the second declaration "
                         f"would tokenize the first one's placeholder"
                     )
                 inner, outer = sorted((segments, other_segments), key=len)
                 if outer[: len(inner)] == inner:
                     raise ValueError(
-                        f"paths {other_path!r} and {field.path!r} overlap — one contains "
+                        f"paths {other_path!r} and {path!r} overlap — one contains "
                         f"the other, so tokenizing both would nest a placeholder inside a "
                         f"hidden value. Declare the outer one only, or narrow them."
                     )
-            seen.append((field.path, segments))
+            seen.append((path, segments))
         return self
 
 
@@ -189,6 +231,25 @@ def schema_fields_for(config: BlindfoldConfig, tool_name: str) -> list[SchemaFie
     return [
         SchemaField(path=f.path, semantic_type=f.semantic_type, unit=f.unit)
         for f in tool.sensitive_fields
+    ]
+
+
+def table_schemas_for(config: BlindfoldConfig, tool_name: str) -> list[tuple[str, TableSchema]]:
+    """(path, schema) for every table a tool declares."""
+    tool = config.schemas.get(tool_name)
+    if tool is None:
+        return []
+    return [
+        (
+            t.path,
+            TableSchema(
+                columns=tuple(
+                    Column(name=c.name, semantic_type=c.semantic_type, unit=c.unit)
+                    for c in t.columns
+                )
+            ),
+        )
+        for t in tool.tables
     ]
 
 

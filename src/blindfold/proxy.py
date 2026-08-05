@@ -28,10 +28,11 @@ from blindfold.config import (
     load_config,
     schema_fields_for,
     schema_fields_for_resource,
+    table_schemas_for,
 )
 from blindfold.core.policy import SessionBoundPolicy
 from blindfold.core.rehydrator import rehydrate
-from blindfold.core.tokenizer import describe_schema, tokenize_result
+from blindfold.core.tokenizer import describe_schema, describe_tables, tokenize_result
 from blindfold.ports.policy import DetokenizePolicy
 from blindfold.ports.sandbox import ComputeSandbox, SandboxError
 from blindfold.ports.token_store import TokenStore
@@ -40,6 +41,11 @@ from blindfold.tools.blindfold_compute import (
     BLINDFOLD_COMPUTE_TOOL_NAME,
     build_tool_definition,
     handle_blindfold_compute,
+)
+from blindfold.tools.blindfold_table import (
+    BLINDFOLD_TABLE_TOOL_NAME,
+    build_tool_definition as build_table_tool_definition,
+    handle_blindfold_table,
 )
 
 
@@ -140,6 +146,11 @@ async def _pump_client_to_child(read_line, child, write_client, state: ProxyStat
                 # in either direction for those seconds.
                 await asyncio.to_thread(_handle_blindfold_compute, msg, write_client, state)
                 continue
+            if params.get("name") == BLINDFOLD_TABLE_TOOL_NAME:
+                # No sandbox and no subprocess: a table query is a fixed set of
+                # operations run here, so it does not need a worker thread.
+                _handle_blindfold_table(msg, write_client, state)
+                continue
             state.pending_calls[msg.get("id")] = params.get("name")
         elif method == "resources/read":
             # Resources carry data just like tool results do, and used to pass
@@ -173,6 +184,8 @@ async def _pump_child_to_client(child, write_client, state: ProxyState) -> None:
             if isinstance(tools, list):
                 _annotate_protected_tools(tools, state)
                 tools.append(build_tool_definition())
+                if any(t.tables for t in state.config.schemas.values()):
+                    tools.append(build_table_tool_definition())
 
             msg_id = msg.get("id")
             if msg_id in state.pending_calls:
@@ -193,15 +206,21 @@ def _annotate_protected_tools(tools: list, state: ProxyState) -> None:
     for tool in tools:
         if not isinstance(tool, dict):
             continue
-        note = describe_schema(schema_fields_for(state.config, tool.get("name", "")))
-        if note is None:
+        name = tool.get("name", "")
+        notes = [
+            describe_schema(schema_fields_for(state.config, name)),
+            describe_tables(table_schemas_for(state.config, name)),
+        ]
+        note = "\n\n".join(n for n in notes if n)
+        if not note:
             continue
         tool["description"] = f"{tool.get('description', '').rstrip()}\n\n{note}".lstrip()
 
 
 def _tokenize_tool_call_result(msg: dict, tool_name: str, state: ProxyState) -> None:
     fields = schema_fields_for(state.config, tool_name)
-    if not fields:
+    tables = table_schemas_for(state.config, tool_name)
+    if not fields and not tables:
         return
     content = (msg.get("result") or {}).get("content") or []
     now = datetime.now(tz=timezone.utc)
@@ -213,7 +232,9 @@ def _tokenize_tool_call_result(msg: dict, tool_name: str, state: ProxyState) -> 
             payload = json.loads(part.get("text", ""))
         except json.JSONDecodeError:
             continue
-        tokenized = tokenize_result(payload, tool_name, fields, state.store, state.session_id, ttl)
+        tokenized = tokenize_result(
+            payload, tool_name, fields, state.store, state.session_id, ttl, tables=tables
+        )
         content[i] = {"type": "text", "text": json.dumps(tokenized)}
 
 
@@ -249,6 +270,30 @@ def _tokenize_resource_read(msg: dict, requested_uri: str, state: ProxyState) ->
             continue
         tokenized = tokenize_result(payload, uri, fields, state.store, state.session_id, ttl)
         part["text"] = json.dumps(tokenized)
+
+
+def _handle_blindfold_table(msg: dict, write_client, state: ProxyState) -> None:
+    args = ((msg.get("params") or {}).get("arguments")) or {}
+    try:
+        new_token = handle_blindfold_table(
+            args,
+            store=state.store,
+            policy=state.policy,
+            session_id=state.session_id,
+            ttl_seconds=state.ttl_seconds,
+        )
+        payload = {
+            "jsonrpc": "2.0",
+            "id": msg.get("id"),
+            "result": {"content": [{"type": "text", "text": new_token}], "isError": False},
+        }
+    except ValueError as exc:
+        payload = {
+            "jsonrpc": "2.0",
+            "id": msg.get("id"),
+            "result": {"content": [{"type": "text", "text": f"blindfold_table error: {exc}"}], "isError": True},
+        }
+    write_client((json.dumps(payload) + "\n").encode("utf-8"))
 
 
 def _handle_rehydrate(msg: dict, write_client, state: ProxyState) -> None:
