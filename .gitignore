@@ -42,6 +42,8 @@ htmlcov/
 
 # Blindfold local artifacts
 vault.db
+blindfold.yaml
+.mcp.json
 *.blindfold.log
 
 # Local development scaffolding — tooling and scratch harnesses, not part of

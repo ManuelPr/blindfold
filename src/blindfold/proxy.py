@@ -106,12 +106,31 @@ async def run_proxy(downstream_cmd: list[str], config_path: Path | None = None) 
     finally:
         for t in tasks:
             t.cancel()
-        if child.returncode is None:
+        # Half a second to reap a child that has already gone: returncode is not
+        # populated the instant its stdout hits EOF, so checking it before this
+        # reports nothing. If the wait times out the child is alive and we are
+        # the ones shutting it down, which is the normal path and silent.
+        try:
+            await asyncio.wait_for(child.wait(), timeout=0.5)
+            died_on_its_own = True
+        except asyncio.TimeoutError:
+            died_on_its_own = False
             child.terminate()
             try:
                 await asyncio.wait_for(child.wait(), timeout=5)
             except asyncio.TimeoutError:
                 child.kill()
+
+        if died_on_its_own and child.returncode != 0:
+            # A downstream that cannot start otherwise leaves the proxy exiting
+            # without a word and the client waiting for a server already gone.
+            # The usual cause is the wrong interpreter: `uv run` does not put
+            # its virtualenv on a child process's PATH.
+            print(
+                f"[blindfold] downstream {downstream_cmd[0]!r} exited with code "
+                f"{child.returncode} — its own error, if any, is above",
+                file=sys.stderr,
+            )
 
 
 async def _pump_client_to_child(read_line, child, write_client, state: ProxyState) -> None:
