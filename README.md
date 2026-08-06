@@ -103,8 +103,9 @@ collective token  : 1
 the model sees    : {"employees": "⟦tok_a58cbaf0⟧"}
 ```
 
-The cost of not having this was never context size — tokens are 14 characters
-and *replace* the values they hide, measured at +3% on that same response. It
+The cost of not having this was never context size — tokens are 22 characters
+and *replace* the values they hide, measured at +3% on that same response back
+when they were 14. It
 was that the model could not operate on the result at all: a few hundred
 unordered opaque strings carry no structure, so it cannot sort them or even
 tell they are comparable quantities.

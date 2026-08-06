@@ -28,7 +28,7 @@ def test_mint_token_shape():
     assert tok.startswith("⟦tok_")
     assert tok.endswith("⟧")
     hex_part = tok.removeprefix("⟦tok_").removesuffix("⟧")
-    assert len(hex_part) == 8
+    assert len(hex_part) == 16
     int(hex_part, 16)  # must parse as hex
 
 

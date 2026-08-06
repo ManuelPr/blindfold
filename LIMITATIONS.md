@@ -124,9 +124,9 @@ Everything below is a current-release gap. All of these are fixable and are call
 
   **Still open:** `invalidate_cascade()` is implemented and tested but nothing calls it. Invalidating a token and its descendants remains something your code does deliberately, not something that happens.
 
-- **No concurrency handling on the vault.** `MemoryTokenStore` is a plain dict with no locking.
+- ~~**No concurrency handling on the vault.**~~ **Closed.** `MemoryTokenStore` now takes an `RLock` on every method, as `SQLiteTokenStore` already did.
 
-  **Fix:** not needed today — one proxy process, one child, one session. It becomes a question with the multi-user server mode, which does not exist. SQLite in WAL mode handles multi-process access on its own, so the locking work often assumed to come with persistence largely does not.
+  This was written as "not needed today — one proxy process, one child, one session", and that was wrong. One process is not one thread: the proxy runs blind compute in a worker thread ([`proxy.py`](src/blindfold/proxy.py), so the sandbox does not stall both pumps for its timeout) while `_pump_child_to_client` keeps tokenizing tool results on the event loop. A model that sends a tool call and a `blindfold_compute` in the same turn — routine — had both threads writing the dict, and the periodic expiry sweep would raise `dictionary changed size during iteration` and take a pump down with it. The conformance suite now hammers both stores from four threads with the sweep forced on every put.
 
 ### Transport
 

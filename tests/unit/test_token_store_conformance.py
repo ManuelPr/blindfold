@@ -155,7 +155,50 @@ def test_invalidate_cascade_on_unknown_token_returns_zero(store):
 def test_mint_token_comes_from_the_port(store):
     token = TokenStore.mint_token()
     assert token.startswith("⟦tok_") and token.endswith("⟧")
-    assert len(token.removeprefix("⟦tok_").removesuffix("⟧")) == 8
+    assert len(token.removeprefix("⟦tok_").removesuffix("⟧")) == 16
+
+
+@freeze_time(NOW)
+def test_stores_survive_concurrent_use_from_threads(store):
+    # Not a persistence question: the proxy runs blind compute in a worker
+    # thread while the other pump keeps tokenizing tool results on the event
+    # loop, so *every* store gets written from two threads at once.
+    # purge_interval_s=0 makes each put sweep, which is where a store that
+    # iterates its own records unsynchronised trips over a concurrent insert.
+    import sys
+    import threading
+
+    for i in range(3000):
+        # A vault with something in it: the sweep's scan has to be long enough
+        # for a second thread to get in the middle of it.
+        store.put(_rec(f"⟦tok_old{i:05d}⟧", session="old"))
+    store.purge_interval_s = 0.0
+    # The fixture built the store outside frozen time, so its purge clock sits
+    # in the future and every sweep would decline to run.
+    store._last_purge = NOW
+    errors = []
+
+    def hammer(offset: int) -> None:
+        try:
+            for i in range(200):
+                token = f"⟦tok_{offset:04d}{i:04d}⟧"
+                store.put(_rec(token, value=offset * 1000 + i))
+                assert store.resolve(token) == offset * 1000 + i
+        except Exception as exc:  # pragma: no cover - only on regression
+            errors.append(exc)
+
+    threads = [threading.Thread(target=hammer, args=(n,)) for n in range(4)]
+    switch = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)  # hand the GIL over often, so the race shows
+    try:
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    finally:
+        sys.setswitchinterval(switch)
+    assert errors == []
+    assert len(store.find_by_session("s")) == 800
 
 
 # --- what only the persistent store can do --------------------------------
@@ -195,36 +238,6 @@ def test_sqlite_creates_missing_parent_directories(tmp_path):
     store = SQLiteTokenStore(tmp_path / "nested" / "dir" / "vault.db")
     try:
         assert (tmp_path / "nested" / "dir" / "vault.db").exists()
-    finally:
-        store.close()
-
-
-@freeze_time(NOW)
-def test_sqlite_survives_concurrent_use_from_threads(tmp_path):
-    # The proxy runs blind compute in a worker thread, so the connection is
-    # touched from a thread that did not create it.
-    import threading
-
-    store = SQLiteTokenStore(tmp_path / "vault.db")
-    errors = []
-
-    def hammer(offset: int) -> None:
-        try:
-            for i in range(25):
-                token = f"⟦tok_{offset:04d}{i:04d}⟧"
-                store.put(_rec(token, value=offset * 1000 + i))
-                assert store.resolve(token) == offset * 1000 + i
-        except Exception as exc:  # pragma: no cover - only on regression
-            errors.append(exc)
-
-    threads = [threading.Thread(target=hammer, args=(n,)) for n in range(4)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    try:
-        assert errors == []
-        assert len(store.find_by_session("s")) == 100
     finally:
         store.close()
 

@@ -2,8 +2,8 @@
 operations over it.
 
 Individual tokens stop being useful somewhere around a few dozen rows. Not
-because of size — a token is 14 characters and *replaces* the value it hides,
-measured at +3% on a 500-row response — but because a few hundred unordered
+because of size — a token is 22 characters and *replaces* the value it hides,
+measured at +3% on a 500-row response back when it was 14 — but because a few hundred unordered
 opaque strings carry no structure. The model cannot sort them, cannot tell they
 are comparable quantities, and to use ``blindfold_compute`` would have to
 enumerate every one by hand in its code. In practice it processes a subset and

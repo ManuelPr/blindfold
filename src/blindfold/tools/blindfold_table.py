@@ -29,7 +29,7 @@ from blindfold.ports.token_store import TokenStore
 BLINDFOLD_TABLE_TOOL_NAME = "blindfold_table"
 
 _TOOL_DESCRIPTION = (
-    "Query a hidden table behind a ⟦tok_XXXXXXXX⟧ placeholder without seeing its rows. "
+    "Query a hidden table behind a ⟦tok_…⟧ placeholder without seeing its rows. "
     "Pass the table's placeholder and a list of operations applied in order.\n"
     "Row operations: "
     '{"op":"filter","column":C,"cmp":"==|!=|<|<=|>|>=|contains","value":V}, '

@@ -14,7 +14,7 @@ import re
 import pytest
 
 from blindfold.config import BlindfoldConfig, SensitiveFieldConfig, ToolSchemaConfig
-TOKEN_RE = re.compile(r"⟦tok_[0-9a-f]{8}⟧")
+TOKEN_RE = re.compile(r"⟦tok_[0-9a-f]{16}⟧")
 
 from blindfold.proxy import _pump_child_to_client, _pump_client_to_child, build_proxy_state
 

@@ -14,7 +14,7 @@ from blindfold.ports.token_store import TokenStore
 BLINDFOLD_COMPUTE_TOOL_NAME = "blindfold_compute"
 
 _TOOL_DESCRIPTION = (
-    "Run Python code on hidden values behind tokens ⟦tok_XXXXXXXX⟧. "
+    "Run Python code on hidden values behind tokens ⟦tok_…⟧. "
     "Every token the code touches via resolve(...) MUST be listed in `inputs`. "
     "The code MUST assign its result to a variable named `result` and the result "
     "MUST be JSON-serializable. The tool returns a NEW token (not the value); "

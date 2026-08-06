@@ -17,7 +17,7 @@ Blindfold's design sits on three ideas that stack.
 
 ### 2.1 Tokenize the tool response before it reaches the model
 
-Every tool response is JSON. Sensitive fields — declared per-tool in `blindfold.yaml` — are replaced with opaque **token strings** (`⟦tok_XXXXXXXX⟧`) before the response leaves the proxy. The real values live in a local **vault** — in memory, or in a SQLite file when they have to outlive the process or be read by another one. The model reasons over tokens; the real numbers never enter its context.
+Every tool response is JSON. Sensitive fields — declared per-tool in `blindfold.yaml` — are replaced with opaque **token strings** (`⟦tok_…⟧`) before the response leaves the proxy. The real values live in a local **vault** — in memory, or in a SQLite file when they have to outlive the process or be read by another one. The model reasons over tokens; the real numbers never enter its context.
 
 ### 2.2 Blind compute — let the model operate on hidden values
 

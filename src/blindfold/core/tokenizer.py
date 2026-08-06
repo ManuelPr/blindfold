@@ -148,7 +148,7 @@ def describe_tables(tables: list[tuple[str, TableSchema]]) -> str | None:
     lines = [f"  {path} — columns: {schema.describe()}" for path, schema in tables]
     return (
         "Blindfold: the lists at these paths come back as a single "
-        "⟦tok_XXXXXXXX⟧ placeholder each, hiding every row. You cannot read them. "
+        "⟦tok_…⟧ placeholder each, hiding every row. You cannot read them. "
         "Use the blindfold_table tool to filter, sort, aggregate or select over "
         "one — it takes the placeholder and a list of operations, and returns "
         "another placeholder.\n" + "\n".join(lines)
@@ -173,7 +173,7 @@ def describe_schema(fields: list[SchemaField]) -> str | None:
         meta = ", ".join(m for m in (field.semantic_type, field.unit) if m)
         lines.append(f"  {field.path}{f' — {meta}' if meta else ''}")
     return (
-        "Blindfold: values at these paths come back as ⟦tok_XXXXXXXX⟧ placeholders, "
+        "Blindfold: values at these paths come back as ⟦tok_…⟧ placeholders, "
         "not real values. You cannot read them — pass a placeholder to "
         "blindfold_compute to operate on it.\n" + "\n".join(lines)
     )

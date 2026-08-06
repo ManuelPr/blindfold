@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 import pytest_asyncio
 
-TOKEN_RE = re.compile(r"⟦tok_[0-9a-f]{8}⟧")
+TOKEN_RE = re.compile(r"⟦tok_[0-9a-f]{16}⟧")
 
 
 @pytest_asyncio.fixture()

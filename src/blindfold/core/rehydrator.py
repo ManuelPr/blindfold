@@ -12,10 +12,15 @@ import re
 from blindfold.ports.policy import DetokenizeContext, DetokenizePolicy
 from blindfold.ports.token_store import TokenStore
 
-TOKEN_PATTERN = re.compile(r"⟦tok_[0-9a-f]{8}⟧")
+# 16 hex is what `mint_token` produces now; 8 is what it produced before, and a
+# persistent vault outlives the version that filled it. Matching both keeps
+# yesterday's placeholders — already sitting in conversation history — resolving
+# after an upgrade. A width that matches but is not in the vault rehydrates to
+# `[unknown token]`, which is the same answer any unknown token gets.
+TOKEN_PATTERN = re.compile(r"⟦tok_[0-9a-f]{8}(?:[0-9a-f]{8})?⟧")
 
 PLACEHOLDER_PROMPT = (
-    "Some tool results in this conversation come back as ⟦tok_XXXXXXXX⟧ placeholders "
+    "Some tool results in this conversation come back as ⟦tok_…⟧ placeholders "
     "instead of real values. You cannot read them, and guessing at them is always wrong.\n\n"
     "To compare, sort, aggregate or otherwise derive from them, call the `blindfold_compute` "
     "tool and pass every placeholder your code resolves in its `inputs` array. It returns a "

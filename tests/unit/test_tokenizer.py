@@ -12,7 +12,7 @@ from blindfold.core.tokenizer import (
 from blindfold.core.vault import MemoryTokenStore
 
 TTL = datetime.now(tz=timezone.utc) + timedelta(hours=1)
-TOKEN_RE = r"⟦tok_[0-9a-f]{8}⟧"
+TOKEN_RE = r"⟦tok_[0-9a-f]{16}⟧"
 
 
 def test_resolve_static_path():

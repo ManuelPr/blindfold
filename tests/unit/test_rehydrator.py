@@ -4,6 +4,7 @@ from blindfold.core.lineage import Lineage, Policy, VaultRecord
 from blindfold.core.policy import SessionBoundPolicy
 from blindfold.core.rehydrator import TOKEN_PATTERN, rehydrate
 from blindfold.core.vault import MemoryTokenStore
+from blindfold.ports.token_store import TokenStore
 
 
 def _put(store: MemoryTokenStore, token: str, value, *, session="s", reveal: bool = True) -> None:
@@ -25,10 +26,12 @@ def _put(store: MemoryTokenStore, token: str, value, *, session="s", reveal: boo
 
 
 def test_regex_matches_valid_and_rejects_invalid():
-    assert TOKEN_PATTERN.fullmatch("⟦tok_deadbeef⟧")
-    assert TOKEN_PATTERN.fullmatch("⟦tok_00000000⟧")
+    assert TOKEN_PATTERN.fullmatch(TokenStore.mint_token())
+    assert TOKEN_PATTERN.fullmatch("⟦tok_deadbeefdeadbeef⟧")
+    assert TOKEN_PATTERN.fullmatch("⟦tok_00000000⟧")  # the 8-hex tokens of older vaults
     assert not TOKEN_PATTERN.fullmatch("⟦tok_TOOSHORT⟧")
     assert not TOKEN_PATTERN.fullmatch("⟦tok_gggggggg⟧")  # 'g' not hex
+    assert not TOKEN_PATTERN.fullmatch("⟦tok_deadbeefdead⟧")  # neither width
     assert not TOKEN_PATTERN.fullmatch("(tok_deadbeef)")
 
 

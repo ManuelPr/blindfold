@@ -7,9 +7,11 @@ is a second way out, so it carries exception *types*, never messages, and
 never child output. Detail goes to the operator's stderr instead.
 
 Current limitations (see LIMITATIONS.md#sandboxing):
-- Full `__builtins__` in the child, so `open()` and `import` work.
-- Network reachable on Linux/macOS; it fails on Windows only because the
-  stripped environment omits SystemRoot, which is an accident, not a control.
+- Builtins are an allow-list, so `open` and `__import__` are gone and the
+  direct routes to the filesystem and the network with them. Not an escape
+  proof: `object.__subclasses__()` needs no builtins at all.
+- The network is therefore not reachable the easy way, and still not denied.
+  Denying it means a container or platform-specific namespace work.
 - Success-versus-failure still leaks one bit per call, and no sandbox closes
   that — only a fixed operation set would.
 - Defenses actually in place: clean env, `python -I`, timeout, subprocess

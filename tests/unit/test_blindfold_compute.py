@@ -59,7 +59,7 @@ def test_handler_happy_path_returns_token_and_stores_record():
         session_id="s",
         ttl_seconds=3600,
     )
-    assert re.fullmatch(r"⟦tok_[0-9a-f]{8}⟧", token)
+    assert re.fullmatch(r"⟦tok_[0-9a-f]{16}⟧", token)
 
     rec = store.get(token)
     assert rec is not None
