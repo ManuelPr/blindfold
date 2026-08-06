@@ -27,7 +27,11 @@ PLACEHOLDER_PROMPT = (
     "new placeholder, never a value.\n\n"
     "Reproduce placeholders VERBATIM in your answers — never invent, alter, shorten or "
     "paraphrase them. The real values are put back in their place after you are done; a "
-    "mangled placeholder shows the user nothing."
+    "mangled placeholder shows the user nothing.\n\n"
+    "If a computation keeps failing, SAY SO instead of guessing a final answer. A wrong "
+    "answer stated with confidence is worse than admitting you could not complete the "
+    "comparison — the user cannot tell the difference between a real result and a guess "
+    "unless you tell them which one it is."
 )
 """Instruction the model needs for rehydration to survive its answer.
 

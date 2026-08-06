@@ -270,6 +270,15 @@ def test_prompt_fragment_is_importable_from_the_package_root():
     assert "blindfold_compute" in top_level
 
 
+def test_prompt_fragment_tells_the_model_to_admit_failure():
+    # Observed missing empirically: a weak model that never finishes a blind
+    # computation guessed a confident, wrong final answer instead of saying so.
+    # Nothing told it that was the wrong move — it only knew how to use
+    # placeholders correctly, not what to do when it couldn't.
+    assert "SAY SO" in PLACEHOLDER_PROMPT
+    assert "guess" in PLACEHOLDER_PROMPT.lower()
+
+
 # --- declarations that would corrupt each other ---------------------------
 #
 # Found while designing the resources section: the tokenizer walks fields in
