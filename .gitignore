@@ -43,6 +43,7 @@ htmlcov/
 # Blindfold local artifacts
 vault.db
 blindfold.yaml
+blindfold-proxy.yaml
 .mcp.json
 *.blindfold.log
 
