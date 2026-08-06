@@ -248,6 +248,50 @@ it through would send the model exactly the values you asked to hide.
 
 ---
 
+## How do you know it is working?
+
+A fair question with an uncomfortable answer: **from the screen, you cannot
+tell.** Mode C puts the real values back before you read them, so a working
+install and no install at all look identical. Mode B is the same if you call
+`rehydrate()` as intended.
+
+The truth is in the transcript — what the model actually received — and reading
+it by eye is not enough, because knowing whether something leaked means knowing
+what was supposed to be hidden. That lives in the vault. So:
+
+```bash
+blindfold audit ~/.claude/projects/<your-project>/<session>.jsonl
+```
+
+It cross-references the two and answers in one line:
+
+```
+vault records            : 1
+placeholders in transcript: 1
+
+No hidden value appears in the transcript.
+```
+
+and when something did get through:
+
+```
+LEAKED — 1 hidden value(s) found in the transcript:
+  ⟦tok_8909bc5650239a83⟧ (salary) -> 71000
+```
+
+Exit code 1 on a leak, so it can gate a pipeline. Note what it does **not**
+tell you: a field you never declared was never tokenized, so there is no record
+of it and nothing to look for. The audit measures whether Blindfold kept the
+promises your config made — not whether your config named everything it should
+have.
+
+For Mode A and Mode B there is a simpler check, because you can see the
+placeholders directly: Mode A leaves them in the answer, and
+`examples/try_modes.py` prints what the tool returned next to what the model
+was given.
+
+---
+
 ## What no mode does
 
 These are properties of the approach, not gaps to be filled. The full list, with

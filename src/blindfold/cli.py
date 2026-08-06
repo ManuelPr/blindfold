@@ -8,6 +8,7 @@ import json
 import sys
 from pathlib import Path
 
+from blindfold import audit as audit_mod
 from blindfold import hooks, mcp_server
 from blindfold.config import BlindfoldConfig, build_token_store, load_config
 from blindfold.core.policy import SessionBoundPolicy
@@ -16,13 +17,16 @@ from blindfold.proxy import run_proxy
 USAGE = (
     "blindfold [--config PATH] -- <downstream-mcp-command> [args...]\n"
     "blindfold hook <post-tool-use|message-display|session-start> [--config PATH]\n"
-    "blindfold mcp-server [--config PATH]\n\n"
+    "blindfold mcp-server [--config PATH]\n"
+    "blindfold audit <transcript> [--session ID] [--config PATH]\n\n"
     "Wraps the given stdio MCP server, tokenizing tool results and exposing\n"
     "the blindfold_compute tool + blindfold/rehydrate JSON-RPC method.\n\n"
     "`hook` reads one Claude Code hook event as JSON on stdin and writes the\n"
     "hook response on stdout. `mcp-server` exposes blindfold_compute so a host\n"
     "can offer it as an ordinary tool. Both need a shared vault\n"
-    "(storage.backend: sqlite): they run as separate processes."
+    "(storage.backend: sqlite): they run as separate processes.\n\n"
+    "`audit` checks a transcript against the vault and reports whether any\n"
+    "hidden value reached the model — the question the screen cannot answer."
 )
 
 
@@ -41,6 +45,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if argv and argv[0] == "mcp-server":
         return run_mcp_server(argv[1:])
+
+    if argv and argv[0] == "audit":
+        return run_audit(argv[1:])
 
     own, downstream = _split_argv(argv)
     parser = argparse.ArgumentParser(
@@ -133,6 +140,46 @@ def run_mcp_server(argv: list[str]) -> int:
         print(f"[blindfold] {exc}", file=sys.stderr)
         return 1
     return 0
+
+
+def run_audit(argv: list[str]) -> int:
+    """Answer "is it actually working" from the transcript, not the screen.
+
+    Exits non-zero when a hidden value is found, so it can gate a pipeline.
+    """
+    parser = argparse.ArgumentParser(prog="blindfold audit", usage=USAGE)
+    parser.add_argument("transcript", type=Path)
+    parser.add_argument("--session", default=None, help="defaults to the transcript's own")
+    parser.add_argument("--config", type=Path, default=Path("blindfold.yaml"))
+    args = parser.parse_args(argv)
+
+    if not args.transcript.exists():
+        print(f"[blindfold] no such transcript: {args.transcript}", file=sys.stderr)
+        return 2
+
+    config = load_config(args.config) if args.config.exists() else BlindfoldConfig()
+    store = build_token_store(config)
+    try:
+        text = audit_mod.read_transcript(args.transcript)
+        sessions = [args.session] if args.session else audit_mod.session_ids_in(args.transcript)
+        if not sessions:
+            print(
+                "[blindfold] the transcript names no session; pass --session",
+                file=sys.stderr,
+            )
+            return 2
+        clean = True
+        for session in sessions:
+            if len(sessions) > 1:
+                print(f"\n--- session {session} ---")
+            report = audit_mod.audit(text, store, session)
+            print(report.render())
+            clean = clean and report.clean
+    finally:
+        close = getattr(store, "close", None)
+        if close is not None:
+            close()
+    return 0 if clean else 1
 
 
 if __name__ == "__main__":
