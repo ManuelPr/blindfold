@@ -9,7 +9,7 @@ still compute with them, and shows you the real ones on screen.
 |---|---|
 | `SessionStart` hook | Before the first prompt, tells the model which paths come back as `⟦tok_…⟧`, what they mean, that `blindfold_compute` is how to operate on them, and to reproduce placeholders verbatim. |
 | `PostToolUse` hook | Replaces declared fields in a tool result with placeholders **before the model sees them**. Applies to every tool — MCP servers, `Bash`, `Read`, `WebFetch`. |
-| `blindfold` MCP server | Offers `blindfold_compute`: the model submits code over placeholders, gets a new placeholder back, never a value. |
+| `blindfold` MCP server | Offers `blindfold_compute` (the model submits code over placeholders, gets a new placeholder back, never a value) and `blindfold_table` (a fixed set of operations — filter, sort, aggregate — over a whole hidden list behind one collective token, no sandbox involved). |
 | `MessageDisplay` hook | Puts the real values back **on screen only**. The transcript keeps the placeholders, so nothing re-enters the model's context on the next turn. |
 
 The first and third exist because a host's hook system **cannot add a tool or
@@ -74,7 +74,10 @@ them — and your screen shows the real values in the final answer.
 
 To confirm it is actually working rather than quietly doing nothing, look at the
 transcript: the tool results and the assistant message there should still
-contain `⟦tok_…⟧`.
+contain `⟦tok_…⟧`. `blindfold audit <transcript>` automates exactly that check —
+point it at the session's `.jsonl` file under `~/.claude/projects/<project>/`
+and it cross-references every vault record against the transcript text and
+reports any hidden value that made it through.
 
 ## Behaviour worth knowing before you rely on it
 
@@ -94,6 +97,14 @@ contain `⟦tok_…⟧`.
   need that variable in their environment. Without it, protect the file with
   filesystem permissions and keep TTLs short.
 - **`MessageDisplay` fires on every assistant message** with a 10-second budget;
-  the hook returns immediately when the text contains no placeholders.
+  the hook returns immediately when the text contains no placeholders. The text
+  to check arrives under `delta` (the newly-completed-lines chunk), not the
+  whole message.
+- **`blindfold_compute` calls on the same token are rate-limited** —
+  `compute.max_calls_per_token` (default 8) within `compute.rate_window_s`
+  (default 60) — to bound how fast a model probing for a hidden value one bit
+  at a time (see [`../LIMITATIONS.md`](../LIMITATIONS.md)) can extract it.
+  Ordinary reuse of a token spread across a session is unaffected; only a burst
+  on one token trips it.
 
 See [`../LIMITATIONS.md`](../LIMITATIONS.md) for the full inventory.

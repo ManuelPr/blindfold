@@ -31,6 +31,7 @@ Blindfold sits between your agent harness and your APIs (or MCP servers). It:
 2. **Tells the LLM what the tokens mean, not what they are.** Each protected tool's description gains one line per declared path — `$.salary — salary, EUR/year` — so the model knows what it is manipulating even when the upstream API names its fields `f_42`. Sent once, with the tool definitions; never per token, never the value.
 3. **Enables blind compute.** The LLM can operate on tokens without reading them: `blindfold_compute` runs code it submits in a sandbox on the real values, and `blindfold_table` applies a fixed set of operations to a whole hidden list. Either way the result is stored as a *new* token with full lineage, and the model orchestrates computations on data it never sees.
 4. **Rehydrates at the last hop.** Tokens in the model's answer are replaced with real values only when the response is delivered to the end user — after a pluggable authorization check. **This step is yours to call.** It happens in your application code, on the answer the model produced; a third-party MCP client will not do it for you (see [Quick start](#quick-start) and [`LIMITATIONS.md`](LIMITATIONS.md#rehydration-requires-a-client-you-control)).
+5. **Lets you check it actually worked.** `blindfold audit <transcript>` cross-references the vault against a real conversation and reports any hidden value that made it through — the one way to tell a working install from no install at all, since the screen looks identical either way once rehydration puts the real values back.
 
 ```
 ┌────────────┐   answer with real values    ┌─────────────────────┐
@@ -76,18 +77,17 @@ Every vault entry is a full record, not a bare key-value pair:
   "token": "tok_9c1b",
   "value": "<held in the vault, never serialized toward the LLM>",
   "dtype": "string",
-  "semantic_type": "person_name",
-  "source": { "kind": "blind_compute" },
-  "lineage": { "op": "argmax", "inputs": ["tok_7f3a", "tok_2d81"], "code_digest": "sha256:…" },
+  "semantic_type": null,
+  "lineage": { "op": "blind_compute", "inputs": ["tok_7f3a", "tok_2d81"], "code_digest": "sha256:…" },
   "session_id": "sess_01",
   "ttl": "2026-07-15T11:32:00Z",
-  "policy": { "reveal_to_frontend": true }
+  "policy": { "reveal_to_frontend": true, "can_be_input_to_compute": true }
 }
 ```
 
 The lineage DAG buys three things most redaction tools don't have:
 
-- **Audit** — every derived value can show exactly which inputs and which code produced it. The records are complete; **[planned]** an exporter that gets them out of the process.
+- **Audit** — every derived value can show exactly which inputs and which code produced it. `blindfold audit <transcript>` cross-references the vault against a real conversation transcript and reports any hidden value that made it through — the way to check the protection actually held, since a working install and no install look identical on screen.
 - **Cascading invalidation** — expire or delete a token and all its descendants go with it. Implemented as `invalidate_cascade`, but nothing in the runtime calls it yet: today it is an API for your code, not an automatic behavior.
 - **Policy inheritance** — a derived token inherits the *most restrictive* policy of its inputs, so sensitive data can't be laundered through a computation. This one is wired: `compose_policy` and `compose_ttl` run on every blind compute.
 
@@ -150,7 +150,7 @@ Tokens use collision-proof delimiters (`⟦tok_…⟧`). `rehydrate()` validates
 
 Rehydration is a function your application calls on the final answer, not something that happens on the wire. Two consequences worth knowing before you design around it:
 
-- The model has to preserve the placeholders verbatim for this to work. The prompt fragment that instructs it to do so is not yet exported by the package — copy it from [`examples/demo_chat.py`](examples/demo_chat.py) (`SYSTEM_PROMPT`). **[planned]** shipping it as a constant.
+- The model has to preserve the placeholders verbatim for this to work. `from blindfold import PLACEHOLDER_PROMPT` and put it in your system prompt — both demos do exactly that, and Mode C carries the same text inside its `SessionStart` briefing, so all three modes draw from one source rather than three drifting paraphrases.
 - If the model's answer never passes through your code, nothing rehydrates it. That is the situation with any MCP client you did not write — see [`LIMITATIONS.md`](LIMITATIONS.md#rehydration-requires-a-client-you-control).
 
 ## Quick start
@@ -225,7 +225,7 @@ One thing Mode A does for you that Mode B does not: appending the protected-path
 
 ## Configuration
 
-Everything deployment-specific lives in one file. **The current release reads exactly two sections** — this is the whole of it:
+Everything deployment-specific lives in one file. **This is the whole of what the current release reads:**
 
 ```yaml
 tokens:
@@ -235,6 +235,10 @@ storage:
   backend: memory           # memory (default) | sqlite
   path: ./vault.db          # sqlite only
   encrypt_at_rest: false    # sqlite only; needs BLINDFOLD_VAULT_KEY
+
+compute:
+  max_calls_per_token: 8    # blindfold_compute calls on one token per window; 0 disables
+  rate_window_s: 60         # window length in seconds
 
 schemas:
   hr_api.get_salary:
@@ -355,12 +359,12 @@ Read this before deploying. Honesty here is a feature.
   | Exception text was forwarded to the model — `raise ValueError(resolve(t))` returned the value in one call | **closed** | done: types only, with six regression tests |
   | `open()` and `import` gave the child's code the filesystem | **raised, not closed** | done: builtins are an allow-list, so the obvious routes are absent. Escaping through Python's object graph needs no builtins and remains possible |
   | Network reachable from compute code | **raised, not closed** — `import socket` now fails like any import. It was open on Linux/macOS; on Windows it failed only as a side effect of the stripped environment breaking socket initialization, an accident, not a defense | **properly only at OS level**: a container with networking off, or equivalent sandboxing |
-  | Success-vs-failure as a one-bit oracle — `result = 1/0 if resolve(t) > 50000 else 'ok'`, repeated, recovers an exact number in ~20 calls | **open** | **no**, not while the model submits arbitrary Python. Only a fixed set of operations (the table design above) removes it |
+  | Success-vs-failure as a one-bit oracle — `result = 1/0 if resolve(t) > 50000 else 'ok'`, repeated, recovers an exact number in ~20 calls | **open, contained** | **no**, not while the model submits arbitrary Python — only a fixed set of operations (the table design above) removes it. `compute.max_calls_per_token`/`rate_window_s` (default: 8 calls per 60s, per token) turn an instant, silent extraction into a slow one with an unmistakable multi-window pattern in the vault's own lineage — it does not close the channel, a patient attacker still gets there at one probe per window |
 
   A CaMeL-style capability/data-flow layer is the long-term answer to the class as a whole. Until then: **do not run blind compute against data whose exposure you cannot tolerate, if the model's inputs come from sources you do not control.** Do not run with `sandbox: disabled` on real data at all.
 - **Quality-preserving magic.** If the model only sees `⟦tok⟧`, it cannot judge whether a salary is competitive or a diagnosis plausible. Blind compute covers *mechanical* operations (compare, aggregate, filter); *semantic* judgment on hidden values is fundamentally impossible. That's the deal.
 
-**Operational cautions:** rehydration is validated, but the model can still mangle placeholders — instruct it not to (prompt fragment in [`examples/demo_chat.py`](examples/demo_chat.py)) and expect the occasional `[unknown token]`. Vault compromise equals data compromise: values sit in cleartext in process memory today, so keep TTLs short and run Blindfold in the same trust zone as the APIs it protects.
+**Operational cautions:** rehydration is validated, but the model can still mangle placeholders — instruct it not to (`PLACEHOLDER_PROMPT`, exported from the package root) and expect the occasional `[unknown token]`. Vault compromise equals data compromise: values sit in cleartext in process memory (and on disk, unless `encrypt_at_rest` is on) today, so keep TTLs short and run Blindfold in the same trust zone as the APIs it protects. Use `blindfold audit <transcript>` after a real session to check what actually reached the model, rather than trusting the screen — a working install and no install at all look identical there.
 
 ## Comparison
 
@@ -400,6 +404,8 @@ Ordered by what the current release most needs, not by ambition.
 - [x] **CI on Linux, macOS and Windows** — including the sandbox probes, so the documented behaviour is asserted per platform
 - [x] **Restricted builtins in the compute child** — the easy filesystem and network paths are gone without anyone installing Docker; not a boundary, a higher cost
 - [x] **Export the placeholder-preserving prompt fragment** as `PLACEHOLDER_PROMPT`, used by both demos and by the Mode C briefing
+- [x] **`blindfold audit`** — cross-references a real conversation transcript against the vault and reports any hidden value that made it through; the check for "is this actually working," since a working install and no install look identical on screen
+- [x] **Rate-limited `blindfold_compute`** — `compute.max_calls_per_token`/`rate_window_s` bound how fast the one-bit oracle above can be probed on a single token, without capping legitimate reuse spread across a session
 - [ ] Table joins, group-by and cross-table aggregation — the operations collective tokens do not have yet
 - [ ] Docker sandbox — the OS-level answer to network and filesystem, after the cheap in-process measures
 - [ ] HTTP proxy mode for plain REST APIs

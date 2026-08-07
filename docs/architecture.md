@@ -29,9 +29,9 @@ When the model's final answer contains tokens, the harness calls `rehydrate(text
 
 Note the subject of that sentence: **the harness calls it.** Rehydration is a function invoked on the final text by code that owns the final text. This is the one idea of the three that Blindfold cannot perform on your behalf, and §3 explains what that costs in each mode.
 
-## 3. Two integration modes
+## 3. Three integration modes
 
-Blindfold ships as one Python package with two deployment surfaces. Which one fits your app depends on how your app already talks to its tools.
+Blindfold ships as one Python package with three deployment surfaces. Which one fits your app depends on how your app already talks to its tools.
 
 ### Mode A: CLI proxy — `blindfold -- <mcp-server>`
 
@@ -88,21 +88,31 @@ Four integration points in your loop:
 
 Framework-agnostic, LLM-agnostic. Works with any provider that supports tool use / function calling. See [`examples/demo_chat.py`](../examples/demo_chat.py) for the full pattern against the Anthropic SDK — swapping in OpenAI or Gemini is a matter of changing the SDK client and the tool_result payload shape.
 
-### Mode C: Claude Code plugin — two hooks, no proxy
+### Mode C: Claude Code plugin — three hooks, no proxy
 
 The host offers its own seams, and they turn out to be a better fit than the
-protocol's. [`src/blindfold/hooks.py`](../src/blindfold/hooks.py) implements two
+protocol's. [`src/blindfold/hooks.py`](../src/blindfold/hooks.py) implements three
 handlers, wired by [`plugin/hooks/hooks.json`](../plugin/hooks/hooks.json) to
 `blindfold hook <event>`:
 
 - **`PostToolUse`** returns `updatedToolOutput`, which replaces the tool result
   *the model receives*. Same job as `_tokenize_tool_call_result` in the proxy,
   except it covers every tool the host has rather than one stdio MCP server.
-- **`MessageDisplay`** returns `displayContent`, which replaces *what the screen
-  shows* while the transcript keeps the original. That is rehydration, with a
-  property the proxy cannot offer: the user reads real values and the
-  conversation keeps the placeholders, so nothing re-enters the model's context
-  on the next turn.
+  The result text arrives one of two shapes depending on the tool: built-ins
+  (`Bash`, `Edit`) send a flat string under `tool_output`; MCP tools send
+  `tool_response`, a list mirroring MCP's own `[{"type": "text", "text": ...}]`
+  content shape. Both are read; anything else is treated as absent, so the
+  call blocks rather than guesses.
+- **`MessageDisplay`** fires on every assistant message as it streams. The text
+  to rewrite arrives under `delta` — "the newly completed lines" of the
+  message, not the whole thing under `message_text` as the general hook docs
+  would suggest for other events; that mismatch cost real debugging time (see
+  [`LIMITATIONS.md`](../LIMITATIONS.md)) before the host's own `/hooks`
+  inspector settled it. The handler returns `displayContent`, which replaces
+  *what the screen shows* while the transcript keeps the original. That is
+  rehydration, with a property the proxy cannot offer: the user reads real
+  values and the conversation keeps the placeholders, so nothing re-enters the
+  model's context on the next turn.
 - **`SessionStart`** returns `additionalContext`, injected before the first
   prompt. It carries `describe_config(config)` — every protected path with its
   meaning, plus the instruction to reproduce placeholders verbatim.
@@ -141,6 +151,7 @@ placeholder. The asymmetry is deliberate and lives in `run_hook`.
 
 | Your setup | Mode |
 |---|---|
+| Claude Code | C |
 | Claude Desktop / Cursor / Windsurf / Zed + stdio MCP server | A — with placeholders in the user-visible answer (see above) |
 | Custom agent that already speaks MCP via `mcp` Python SDK | A if you add the `blindfold/rehydrate` call, otherwise B |
 | Enterprise agent using Anthropic / OpenAI / Gemini SDK directly | B |
@@ -148,7 +159,7 @@ placeholder. The asymmetry is deliberate and lives in `run_hook`.
 | Self-hosted LLM (Ollama, vLLM, LiteLLM) | B |
 | Multi-provider gateway (Portkey, LangSmith proxy, etc.) | B, wrapped once at your gateway layer |
 
-**Same core, two seams.** The `Rehydrator`, `Tokenizer`, `MemoryTokenStore`, `SessionBoundPolicy`, `SubprocessSandbox`, and `blindfold_compute` handler are the same objects in both modes; only the transport around them differs. The proxy in Mode A is a very thin adapter that translates MCP JSON-RPC into calls on the same library objects Mode B uses directly.
+**Same core, three seams.** The `Rehydrator`, `Tokenizer`, `MemoryTokenStore`/`SQLiteTokenStore`, `SessionBoundPolicy`, `SubprocessSandbox`, and `blindfold_compute` handler are the same objects in all three modes; only the transport around them differs. The proxy in Mode A is a thin adapter translating MCP JSON-RPC into calls on the same library objects Mode B uses directly, and Mode C's hooks (`src/blindfold/hooks.py`) are the same again, called by the host instead of a proxy loop.
 
 ## 4. The system, one component per file
 
@@ -258,19 +269,22 @@ A list declared under `tables:` is replaced by **one** token whatever its length
 The MCP tool the LLM actually calls. Two exports:
 
 - `build_tool_definition()` — returns the tool spec (name, description, JSON schema for `code` + `inputs`). The description teaches the model the protocol: "every token you resolve must be listed in `inputs`; assign to `result`; result must be JSON-serializable; you get back a new token, not a value".
-- `handle_blindfold_compute(args, *, store, policy, sandbox, session_id, ttl_seconds)` — the orchestrator:
+- `handle_blindfold_compute(args, *, store, policy, sandbox, session_id, ttl_seconds, max_calls_per_token, rate_window_s)` — the orchestrator:
   1. Validate `args` shape.
   2. For each input token: fetch the record, run `policy.can_compute` — reject on failure.
-  3. Build `{token: value}` dict.
-  4. Call the sandbox.
-  5. Mint a new record with `lineage.op="blind_compute"`, `lineage.inputs=tuple(inputs)`, `lineage.code_digest=sha256(code)`, `policy=compose_policy([...])`, `ttl=compose_ttl([...])`.
-  6. Return the new token.
+  3. **Rate check**: for each input token, count how many `blind_compute` records already in the vault (for this session, within the last `rate_window_s` seconds) list it in `lineage.inputs`. Refuse if any token is at or past `max_calls_per_token` — no new counter, just a scan over records already being written.
+  4. Build `{token: value}` dict.
+  5. Call the sandbox.
+  6. Mint a new record with `lineage.op="blind_compute"`, `lineage.inputs=tuple(inputs)`, `lineage.code_digest=sha256(code)`, `policy=compose_policy([...])`, `ttl=compose_ttl([...])`.
+  7. Return the new token.
 
 The composed policy and TTL are why the model cannot launder sensitive data through a computation: derived tokens are at least as restricted as their most restrictive input.
 
+**Why the rate check is a window, not a lifetime count:** the same token legitimately shows up as compute input many times across a real session — the same salary compared against different thresholds, hours apart. A flat cap on total reuse would break that on the first ordinary session that used a value more than a couple of times. A *rate* limit lets spread-out reuse through untouched while catching a burst — which is what the one-bit oracle in [`LIMITATIONS.md`](../LIMITATIONS.md#blind-compute-answers-one-bit-per-call-whatever-the-sandbox) actually looks like: many calls, same token, close together. It does not close the channel — a patient attacker still gets there at one probe per window — but it turns a silent, instant extraction into a slow one with an unmistakable pattern already sitting in the vault's own lineage data. Wired into both callers that reach this handler — `mcp_server.compute()` (Mode C) and `proxy._handle_blindfold_compute` (Mode A) — from the same `config.compute` values, so the limit does not depend on which mode is running.
+
 ### Config — [`src/blindfold/config.py`](../src/blindfold/config.py)
 
-Pydantic v2 models for `blindfold.yaml`. MVP consumes two sections: `schemas` (which tools have which sensitive fields) and `tokens.default_ttl` (how long records live by default). Unknown top-level keys are tolerated via `extra="allow"` so future config additions do not break older Blindfold binaries. `schema_fields_for(config, tool_name)` hands the tokenizer its `SchemaField` list.
+Pydantic v2 models for `blindfold.yaml`. Five top-level sections: `schemas` (which tools have which sensitive fields, and which tables), `resources` (the same, keyed by URI glob for MCP resources), `tokens.default_ttl` (how long records live by default), `storage` (backend, path, encryption), and `compute` (`max_calls_per_token`/`rate_window_s`, the rate limit on `blindfold_compute` described below). Unknown top-level keys are tolerated via `extra="allow"` so future config additions do not break older Blindfold binaries. `schema_fields_for(config, tool_name)` hands the tokenizer its `SchemaField` list.
 
 ### Proxy — [`src/blindfold/proxy.py`](../src/blindfold/proxy.py)
 
@@ -293,9 +307,20 @@ The wire orchestrator. `run_proxy(downstream_cmd, config_path)`:
 
 **Windows note:** `asyncio.connect_read_pipe(sys.stdin)` doesn't work on Windows' ProactorEventLoop. The proxy uses `asyncio.to_thread(stdin.buffer.readline)` and synchronous `stdout.buffer.write + flush` instead. Portable, small enough to reason about, no platform detection needed.
 
+### Audit — [`src/blindfold/audit.py`](../src/blindfold/audit.py)
+
+Answers the question a screenshot cannot: did any hidden value actually reach the model, in a *real* conversation. `audit(transcript, store, session_id)`:
+
+1. Finds every `⟦tok_…⟧` placeholder in the transcript text (`TOKEN_PATTERN.findall`), and every vault record for the session (`store.find_by_session`).
+2. For each record, searches the transcript for its value as text — every scalar inside it if the value is a table row or nested structure (`_searchable`). A hit is a leak, reported with the token and its `semantic_type`.
+3. Values under `MIN_INTERESTING` (5) characters are skipped and counted separately — `"Eng"` or `"1"` occurs in any transcript for reasons unrelated to a leak.
+4. **`blind_compute`-lineage records get one more check before being called a leak**: `_literals_the_model_already_wrote` scans the transcript for string literals inside any `blindfold_compute` call's own `code` argument (its JSON-escaped text, unescaped and searched for quoted substrings). A match there means the model typed that text itself — choosing between two already-known names based on a hidden comparison, say — not that it came out of the vault. Reported separately as `Report.explained`, not silently dropped, so a wrong exclusion is still visible. A value actually produced by `resolve(...)` arithmetic, never typed as a literal anywhere, is unaffected.
+
+`read_transcript(path)` re-serializes each JSONL line (`json.dumps(json.loads(line), ensure_ascii=False)`) so a placeholder written escaped by one process and literally by another is found either way; a non-`.jsonl` file is read as plain text, so a log captured by hand works too. `session_ids_in(path)` reads the `sessionId` field Claude Code's own transcripts carry, so the caller does not have to know one. Exposed as `blindfold audit <transcript> [--session ID]`.
+
 ### CLI — [`src/blindfold/cli.py`](../src/blindfold/cli.py)
 
-A thin argparse layer. `blindfold [--config PATH] -- <cmd> [args...]`: parses the pre-`--` options, treats everything after `--` as the downstream command, calls `run_proxy`. Also exposed as `python -m blindfold` via [`__main__.py`](../src/blindfold/__main__.py).
+A thin argparse layer. `blindfold [--config PATH] -- <cmd> [args...]`: parses the pre-`--` options, treats everything after `--` as the downstream command, calls `run_proxy`. `blindfold hook <event>` reads a JSON hook event from stdin and dispatches to [`hooks.py`](../src/blindfold/hooks.py) (Mode C). `blindfold mcp-server` starts the `blindfold_compute`/`blindfold_table` MCP server (Mode C, see [`mcp_server.py`](../src/blindfold/mcp_server.py)). `blindfold audit <transcript>` runs the check above. Also exposed as `python -m blindfold` via [`__main__.py`](../src/blindfold/__main__.py). `main()` reconfigures `stdin`/`stdout`/`stderr` to UTF-8 before anything else runs — Windows' default console codepage cannot represent the token delimiters, and a binary a host invokes by bare command name never gets `PYTHONIOENCODING` set for it.
 
 ## 5. End-to-end example: "Who earns more, Manuel or Andrea?"
 
@@ -380,10 +405,13 @@ Under Claude Desktop or Cursor, with nothing making that call, the last line rea
 
 ```
 src/blindfold/
-├── __init__.py                # re-exports rehydrate
+├── __init__.py                # re-exports PLACEHOLDER_PROMPT, describe_config, describe_schema, rehydrate
 ├── __main__.py                # enables `python -m blindfold`
-├── cli.py                     # argparse; `blindfold -- <cmd>`
-├── proxy.py                   # asyncio stdio MCP proxy
+├── cli.py                     # argparse; proxy / hook / mcp-server / audit subcommands
+├── proxy.py                   # asyncio stdio MCP proxy (Mode A)
+├── hooks.py                   # SessionStart / PostToolUse / MessageDisplay handlers (Mode C)
+├── mcp_server.py               # blindfold_compute / blindfold_table as an MCP server (Mode C)
+├── audit.py                   # cross-reference a transcript against the vault
 ├── config.py                  # pydantic BlindfoldConfig
 ├── core/
 │   ├── lineage.py             # data model + composition helpers
@@ -391,7 +419,7 @@ src/blindfold/
 │   ├── sqlite_store.py        # SQLiteTokenStore
 │   ├── tokenizer.py           # SchemaField + tokenize_result + JSONPath
 │   ├── table.py               # collective tokens: the query operations
-│   ├── rehydrator.py          # rehydrate + TOKEN_PATTERN
+│   ├── rehydrator.py          # rehydrate + TOKEN_PATTERN + PLACEHOLDER_PROMPT
 │   └── policy.py              # SessionBoundPolicy
 ├── ports/
 │   ├── token_store.py         # TokenStore ABC
@@ -400,7 +428,7 @@ src/blindfold/
 ├── sandbox/
 │   └── subprocess_.py         # SubprocessSandbox
 └── tools/
-    ├── blindfold_compute.py   # tool spec + handler
+    ├── blindfold_compute.py   # tool spec + handler + compute rate limit
     └── blindfold_table.py     # query a collective token, no sandbox
 ```
 

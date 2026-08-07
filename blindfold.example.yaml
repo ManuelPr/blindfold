@@ -31,6 +31,14 @@ schemas:
 tokens:
   default_ttl: 3600
 
+# Bounds how fast a single token can be reused as blindfold_compute input.
+# blindfold_compute can leak one bit per call by writing code whose success
+# depends on a hidden value (see LIMITATIONS.md); reused across a session this
+# is invisible, a burst on one token trips it. 0 disables the check.
+compute:
+  max_calls_per_token: 8
+  rate_window_s: 60
+
 storage:
   # memory (default) loses everything when the process ends. Choose sqlite when
   # the vault must outlive a restart, or when tokenizing and rehydrating happen

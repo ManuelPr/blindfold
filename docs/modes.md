@@ -306,7 +306,10 @@ reasoning, is in [`LIMITATIONS.md`](../LIMITATIONS.md).
 - **`blindfold_compute` runs arbitrary Python**, so a model actively trying to
   extract a value can learn one bit per call by writing code that fails on
   purpose. `blindfold_table` cannot be used that way — where your data is a
-  list, prefer a table.
+  list, prefer a table. For `blindfold_compute`, `compute.max_calls_per_token`/
+  `rate_window_s` (default: 8 calls per 60s, per token) bound how *fast* that
+  channel can be probed — reused across a session it is invisible, a burst
+  trips it — but it does not close the channel, only slows it down.
 - **Access control is your API's job.** Blindfold forwards requests untouched.
   If your API answers anyone, Blindfold faithfully hides data the caller should
   never have received.
