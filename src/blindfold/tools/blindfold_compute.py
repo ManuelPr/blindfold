@@ -55,6 +55,47 @@ def _infer_dtype(value: Any) -> str:
     return "object"
 
 
+def _refuse_if_probed_too_fast(
+    tokens: list[str],
+    *,
+    store: TokenStore,
+    session_id: str,
+    max_calls: int,
+    window_s: int,
+) -> None:
+    """Bound how fast a single token can be re-used as compute input.
+
+    A token legitimately reused many times across a long session — the same
+    salary compared against several different thresholds, hours apart — must
+    not trip this. What should is many calls on the *same* token in a short
+    burst: that is the shape of the binary-search oracle in LIMITATIONS.md,
+    which extracts a value through the tool's success/failure, not its return
+    value (every result is tokenized regardless of type, so a plain boolean
+    reveals nothing on its own).
+
+    Counted from `blind_compute` records already in the vault rather than a
+    separate counter, so there is nothing new to keep in sync.
+    """
+    if max_calls <= 0:
+        return
+    cutoff = datetime.now(tz=timezone.utc) - timedelta(seconds=window_s)
+    recent = [
+        r
+        for r in store.find_by_session(session_id)
+        if r.lineage.op == "blind_compute" and r.created_at >= cutoff
+    ]
+    for token in set(tokens):
+        count = sum(1 for r in recent if token in r.lineage.inputs)
+        if count >= max_calls:
+            raise ValueError(
+                f"compute rate limit: this token has been used {count} times in "
+                f"the last {window_s}s (limit {max_calls}). If this is a single "
+                f"legitimate computation, wait and retry; for filtering/sorting/"
+                f"aggregating a list, blindfold_table has no such limit because "
+                f"it cannot fail on the data."
+            )
+
+
 def handle_blindfold_compute(
     args: dict,
     *,
@@ -64,6 +105,8 @@ def handle_blindfold_compute(
     session_id: str,
     ttl_seconds: int,
     code_timeout_s: float = 5.0,
+    max_calls_per_token: int = 8,
+    rate_window_s: int = 60,
 ) -> str:
     code = args.get("code")
     inputs = args.get("inputs")
@@ -81,6 +124,14 @@ def handle_blindfold_compute(
             raise ValueError(f"policy denied compute on token: {token}")
         resolved[token] = record.value
         input_records.append(record)
+
+    _refuse_if_probed_too_fast(
+        inputs,
+        store=store,
+        session_id=session_id,
+        max_calls=max_calls_per_token,
+        window_s=rate_window_s,
+    )
 
     value = sandbox.run(code=code, inputs=resolved, timeout_s=code_timeout_s)
 

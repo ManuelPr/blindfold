@@ -338,6 +338,8 @@ def _handle_blindfold_compute(msg: dict, write_client, state: ProxyState) -> Non
             sandbox=state.sandbox,
             session_id=state.session_id,
             ttl_seconds=state.ttl_seconds,
+            max_calls_per_token=state.config.compute.max_calls_per_token,
+            rate_window_s=state.config.compute.rate_window_s,
         )
         payload = {
             "jsonrpc": "2.0",

@@ -144,3 +144,75 @@ def test_handler_propagates_sandbox_error():
             session_id="s",
             ttl_seconds=3600,
         )
+
+
+# --- compute rate limit: the binary-search oracle's actual mitigation ------
+
+
+def _compute(store, token, *, threshold, max_calls_per_token=8, rate_window_s=60):
+    return handle_blindfold_compute(
+        {"code": f"result = 'yes' if resolve('{token}') > {threshold} else 'no'", "inputs": [token]},
+        store=store,
+        policy=SessionBoundPolicy(),
+        sandbox=SubprocessSandbox(),
+        session_id="s",
+        ttl_seconds=3600,
+        max_calls_per_token=max_calls_per_token,
+        rate_window_s=rate_window_s,
+    )
+
+
+def test_a_burst_of_probes_on_the_same_token_is_refused():
+    # The binary-search oracle's actual shape: many calls, same token, close
+    # together. This is what the limit exists to catch.
+    store = MemoryTokenStore()
+    _put(store, "⟦tok_00000001⟧", 71000)
+    for i in range(3):
+        _compute(store, "⟦tok_00000001⟧", threshold=1000 * i, max_calls_per_token=3)
+    with pytest.raises(ValueError, match="rate limit"):
+        _compute(store, "⟦tok_00000001⟧", threshold=3000, max_calls_per_token=3)
+
+
+def test_a_different_token_is_not_throttled_by_someone_elses_burst():
+    store = MemoryTokenStore()
+    _put(store, "⟦tok_00000001⟧", 71000)
+    _put(store, "⟦tok_00000002⟧", 62000)
+    for i in range(3):
+        _compute(store, "⟦tok_00000001⟧", threshold=1000 * i, max_calls_per_token=3)
+    # tok_00000002 has made zero calls; the limit is per-token, not per-session.
+    _compute(store, "⟦tok_00000002⟧", threshold=500, max_calls_per_token=3)
+
+
+def test_reuse_spread_across_a_session_is_not_throttled():
+    # The exact case a flat lifetime cap would break: the same token used
+    # many times for unrelated computations, hours apart, not consecutively.
+    # A short rate window must let this through even past what a burst limit
+    # would allow, because none of the calls are close together in time.
+    store = MemoryTokenStore()
+    _put(store, "⟦tok_00000001⟧", 71000)
+    now = datetime.now(tz=timezone.utc)
+    for hours_ago in (5, 4, 3, 2, 1):
+        store.put(
+            VaultRecord(
+                token=f"⟦tok_old{hours_ago}⟧",
+                value="irrelevant",
+                dtype="string",
+                semantic_type=None,
+                unit=None,
+                session_id="s",
+                created_at=now - timedelta(hours=hours_ago),
+                ttl=now + timedelta(hours=1),
+                lineage=Lineage(op="blind_compute", inputs=("⟦tok_00000001⟧",)),
+                policy=Policy(),
+            )
+        )
+    # Five prior uses of the same token, but all outside a 1-minute window:
+    # a call right now must still succeed.
+    _compute(store, "⟦tok_00000001⟧", threshold=50000, max_calls_per_token=3, rate_window_s=60)
+
+
+def test_zero_disables_the_limit():
+    store = MemoryTokenStore()
+    _put(store, "⟦tok_00000001⟧", 71000)
+    for i in range(20):
+        _compute(store, "⟦tok_00000001⟧", threshold=i, max_calls_per_token=0)

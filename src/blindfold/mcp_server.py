@@ -92,6 +92,8 @@ def compute(
         sandbox=sandbox,
         session_id=session_id,
         ttl_seconds=config.tokens.default_ttl,
+        max_calls_per_token=config.compute.max_calls_per_token,
+        rate_window_s=config.compute.rate_window_s,
     )
 
 

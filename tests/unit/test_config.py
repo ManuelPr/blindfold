@@ -53,6 +53,17 @@ tokens:
     ]
 
 
+def test_compute_rate_limit_defaults_and_is_configurable(tmp_path: Path):
+    assert BlindfoldConfig().compute.max_calls_per_token == 8
+    assert BlindfoldConfig().compute.rate_window_s == 60
+
+    p = tmp_path / "blindfold.yaml"
+    p.write_text("compute:\n  max_calls_per_token: 3\n  rate_window_s: 30\n", encoding="utf-8")
+    cfg = load_config(p)
+    assert cfg.compute.max_calls_per_token == 3
+    assert cfg.compute.rate_window_s == 30
+
+
 def test_unknown_top_level_keys_tolerated(tmp_path: Path):
     p = tmp_path / "blindfold.yaml"
     p.write_text(

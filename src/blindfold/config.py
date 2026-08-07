@@ -120,6 +120,17 @@ class TokensConfig(BaseModel):
     default_ttl: int = 3600
 
 
+class ComputeConfig(BaseModel):
+    #: A token used as `blindfold_compute` input more than this many times
+    #: within `rate_window_s` is refused for the rest of the window. Bounds
+    #: how fast the tool's success/failure side channel (see LIMITATIONS.md,
+    #: "Blind compute answers one bit per call") can extract an exact value
+    #: through repeated threshold probes, without capping legitimate reuse of
+    #: the same token spread naturally across a session. 0 disables the check.
+    max_calls_per_token: int = 8
+    rate_window_s: int = 60
+
+
 _IMPLEMENTED_BACKENDS = ("memory", "sqlite")
 _PLANNED_BACKENDS = ("redis", "postgres")
 
@@ -155,6 +166,7 @@ class BlindfoldConfig(BaseModel):
     resources: dict[str, ToolSchemaConfig] = {}
     tokens: TokensConfig = TokensConfig()
     storage: StorageConfig = StorageConfig()
+    compute: ComputeConfig = ComputeConfig()
 
 
 def load_config(path: Path | str) -> BlindfoldConfig:
