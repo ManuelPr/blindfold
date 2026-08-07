@@ -38,6 +38,18 @@ def _split_argv(argv: list[str]) -> tuple[list[str], list[str]]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Windows' default console/subprocess codepage cannot encode the token
+    # delimiters U+27E6/U+27E7, and nothing upstream sets PYTHONIOENCODING for
+    # a `uv tool install`-ed binary a host invokes as a bare command name —
+    # which is exactly how the plugin's hooks and MCP server run it. Every
+    # subcommand below prints through text-mode stdout/stderr, so this forces
+    # UTF-8 once, here, rather than crashing at the first placeholder printed.
+    # Harmless to the proxy's own JSON-RPC path, which writes raw bytes via
+    # sys.stdout.buffer and never goes through this text layer at all.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure") and (stream.encoding or "").lower() != "utf-8":
+            stream.reconfigure(encoding="utf-8")
+
     argv = list(sys.argv[1:] if argv is None else argv)
 
     if argv and argv[0] == "hook":

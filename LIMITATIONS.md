@@ -140,7 +140,9 @@ Everything below is a current-release gap. All of these are fixable and are call
 
 - **[Mode A only] `prompts/*` is still not inspected.** Prompt templates are instructions rather than API data and nothing can be declared against them. If your server puts sensitive values inside prompt templates, the proxy will not find them.
 - **CLI proxy is stdio MCP only. [Mode A only]** The `blindfold -- <cmd>` CLI wraps a single downstream stdio MCP server. No HTTP proxy mode for REST APIs, no wrapping of remote/SSE MCP servers. Mode B (in-process library) has no transport concept — it plugs into any LLM SDK loop directly, MCP or not.
-- **Cross-platform CI missing.** Developed and tested on Windows. Linux/macOS should work but there is no CI yet to confirm.
+- ~~**Cross-platform CI missing.**~~ **Closed.** `.github/workflows/ci.yml` runs the suite on Linux, macOS and Windows, Python 3.11–3.13, plus a dedicated job asserting the sandbox findings above per platform rather than trusting a measurement taken once, on one machine — which is exactly how the next entry was found.
+
+- ~~**`blindfold hook` and `blindfold audit` crashed on Windows the moment they printed a placeholder.**~~ **Closed.** Reproduced live: `uv tool install .` on a stock Windows shell, then `blindfold hook session-start` against a config declaring any protected path, raised `UnicodeEncodeError: 'charmap' codec can't encode character '⟦'`. Windows' default console codepage (cp1252) cannot represent U+27E6/U+27E7, and nothing set `PYTHONIOENCODING` for a binary a host invokes by bare command name — which is exactly how the Mode C plugin's hooks and MCP server run it. Every subcommand that can print a placeholder was exposed, most importantly `audit`, whose entire job is printing them in a leak report. `main()` now reconfigures stdout/stderr to UTF-8 unconditionally at the top, before any subcommand runs; harmless to the proxy's own JSON-RPC path, which writes raw bytes via `sys.stdout.buffer` and never touches this text layer.
 
 ### Sandboxing
 
