@@ -155,8 +155,20 @@ def handle_message_display(
     store: TokenStore,
     policy: DetokenizePolicy,
 ) -> dict | None:
-    """Show the user real values while the transcript keeps the placeholders."""
-    text = event.get("message_text")
+    """Show the user real values while the transcript keeps the placeholders.
+
+    The field is ``delta`` — "the newly completed lines" of the message as it
+    streams — not a ``message_text`` holding the whole thing. No page of the
+    hosted docs states this; it was found live, in the host's own `/hooks`
+    inspector, after the general hook documentation's generic "message_text"
+    field (real for other events, assumed here) sent this hook chasing a key
+    that was never in the payload. It always returned None — correctly, since
+    the field it checked was always absent — which is why nothing ever showed
+    up as a failure: there was nothing to fail. Every delta is handled on its
+    own; a token is expected to land whole within one, since deltas are
+    "newly completed lines" and delimiters don't span line breaks.
+    """
+    text = event.get("delta")
     if not isinstance(text, str) or not TOKEN_PATTERN.search(text):
         # This fires on every assistant message and the host allows 10 seconds,
         # so the overwhelmingly common case gets out before touching the vault.

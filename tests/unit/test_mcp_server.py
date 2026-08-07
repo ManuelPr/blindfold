@@ -111,7 +111,7 @@ def test_tokenize_then_compute_then_reveal(store, config):
     assert derived not in (andrea, manuel)
 
     shown = hooks.handle_message_display(
-        {"session_id": SESSION, "message_text": f"The higher earner is {derived}."},
+        {"session_id": SESSION, "delta": f"The higher earner is {derived}."},
         store=store,
         policy=SessionBoundPolicy(),
     )

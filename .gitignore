@@ -42,6 +42,10 @@ htmlcov/
 
 # Blindfold local artifacts
 vault.db
+vault.db-wal
+vault.db-shm
+*.db-wal
+*.db-shm
 blindfold.yaml
 blindfold-proxy.yaml
 .mcp.json

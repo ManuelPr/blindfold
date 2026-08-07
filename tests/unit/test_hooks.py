@@ -58,10 +58,17 @@ def _post_tool_use_event(output, *, tool=TOOL, session=SESSION):
 
 
 def _display_event(text, *, session=SESSION):
+    # "delta", not "message_text" — confirmed live via the host's own /hooks
+    # inspector, not documented anywhere the general hook docs cover. See the
+    # docstring on handle_message_display for how that was found.
     return {
         "session_id": session,
         "hook_event_name": "MessageDisplay",
-        "message_text": text,
+        "turn_id": "t1",
+        "message_id": "m1",
+        "index": 0,
+        "final": True,
+        "delta": text,
     }
 
 
@@ -229,6 +236,28 @@ def test_display_is_untouched_when_there_are_no_tokens(vault_path):
                 store=store,
                 policy=SessionBoundPolicy(),
             )
+            is None
+        )
+    finally:
+        store.close()
+
+
+def test_a_message_text_field_is_not_read_the_hook_reads_delta(vault_path):
+    # The real bug, live on a real host: the event carries `delta`, not
+    # `message_text`. This event has the token under the WRONG key on purpose
+    # — a build that reverts to reading message_text would pass every other
+    # test here (they all set both keys via _display_event) and still be
+    # broken, exactly as it was for weeks. This is the one test that only
+    # passes if the right field is actually being read.
+    store = _store(vault_path)
+    try:
+        event = {
+            "session_id": SESSION,
+            "message_text": "The winner is ⟦tok_0000000000000000⟧.",
+            "delta": "no placeholder in this one",
+        }
+        assert (
+            hooks.handle_message_display(event, store=store, policy=SessionBoundPolicy())
             is None
         )
     finally:
