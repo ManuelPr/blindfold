@@ -93,7 +93,15 @@ def handle_post_tool_use(
 
     raw = event.get("tool_output")
     if not isinstance(raw, str):
-        return _block(f"{tool_name} declares protected fields but returned no text output")
+        # Diagnostic, not guesswork: this is what actually showed up the first
+        # time a real host sent an MCP tool result — types and key names only,
+        # never a value, since the payload can legitimately hold the real
+        # hidden data at this point (masking has not run yet).
+        shape = {k: type(v).__name__ for k, v in event.items()}
+        return _block(
+            f"{tool_name} declares protected fields but returned no text output "
+            f"(tool_output is {type(raw).__name__}; event shape: {shape})"
+        )
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError:

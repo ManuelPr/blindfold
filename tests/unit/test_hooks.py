@@ -120,6 +120,33 @@ def test_declared_tool_that_cannot_be_tokenized_is_blocked(config, vault_path, o
     assert TOOL in out["reason"]
 
 
+def test_the_no_text_output_block_names_the_events_shape_without_its_values(config, vault_path):
+    # Reproduced against a real host: PostToolUse blocked with only "returned
+    # no text output" and no way to tell what Claude Code had actually sent for
+    # an MCP tool call. The reason now carries the event's key names and Python
+    # types — never a value, since the payload can legitimately hold the real
+    # hidden data at this point, masking not having run yet.
+    store = _store(vault_path)
+    try:
+        out = hooks.handle_post_tool_use(
+            {
+                "session_id": SESSION,
+                "tool_name": TOOL,
+                "tool_output": {"salary": 71000},  # e.g. structured, not a string
+                "tool_response": "Andrea Tuscano 71000",  # a real value, must never appear
+            },
+            config=config,
+            store=store,
+        )
+    finally:
+        store.close()
+    assert out["decision"] == "block"
+    assert "tool_output is dict" in out["reason"]
+    assert "tool_output" in out["reason"] and "tool_response" in out["reason"]
+    assert "71000" not in out["reason"]
+    assert "Andrea Tuscano" not in out["reason"]
+
+
 # --- MessageDisplay -------------------------------------------------------
 
 
