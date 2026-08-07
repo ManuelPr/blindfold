@@ -108,6 +108,63 @@ def test_a_vault_with_records_but_no_placeholders_says_so():
     assert "wrong transcript" in report.render()
 
 
+# --- blind_compute results that coincide with public text -----------------
+
+
+def _store_with_compute_result(value, *, session: str = SESSION):
+    """A record the way blindfold_compute actually mints it: op=blind_compute."""
+    store = MemoryTokenStore()
+    token = TokenStore.mint_token()
+    store.put(
+        VaultRecord(
+            token=token,
+            value=value,
+            dtype="string" if isinstance(value, str) else "number",
+            semantic_type=None,
+            unit=None,
+            session_id=session,
+            created_at=datetime.now(tz=timezone.utc),
+            ttl=datetime.now(tz=timezone.utc) + timedelta(hours=1),
+            lineage=Lineage(op="blind_compute", inputs=("tok_a", "tok_b")),
+            policy=Policy(),
+        )
+    )
+    return store, token
+
+
+def test_a_literal_the_model_wrote_into_compute_code_is_not_a_leak():
+    # The model already knew the name — it typed it itself, choosing between
+    # two known names based on a hidden salary comparison. The token wraps
+    # the choice, not the name.
+    store, token = _store_with_compute_result("Andrea Tuscano")
+    transcript = (
+        '{"type":"tool_use","name":"blindfold_compute","input":'
+        '{"code":"result = \'Andrea Tuscano\' if resolve(\'tok_a\') > resolve(\'tok_b\') '
+        'else \'Manuel Pernigotto\'","inputs":["tok_a","tok_b"]}}'
+        f' ...later the screen shows {token} resolved as Andrea Tuscano...'
+    )
+    report = audit(transcript, store, SESSION)
+    assert report.clean
+    assert len(report.explained) == 1
+    assert report.explained[0].value == "Andrea Tuscano"
+    assert "matched but explained" in report.render()
+
+
+def test_a_computed_number_never_typed_as_a_literal_is_still_a_leak():
+    # Contrast case: a sum pulled purely out of resolve(...) calls. It was
+    # never a literal in the code, so the carve-out must not swallow it.
+    store, token = _store_with_compute_result(180000)
+    transcript = (
+        '{"type":"tool_use","name":"blindfold_compute","input":'
+        '{"code":"result = resolve(\'tok_a\') + resolve(\'tok_b\')","inputs":["tok_a","tok_b"]}}'
+        ' the total came out to 180000 apparently'
+    )
+    report = audit(transcript, store, SESSION)
+    assert not report.clean
+    assert report.leaks[0].value == "180000"
+    assert not report.explained
+
+
 # --- reading a Claude Code transcript --------------------------------------
 
 
