@@ -76,6 +76,33 @@ def handle_session_start(event: dict, *, config: BlindfoldConfig) -> dict | None
     }
 
 
+def _extract_tool_text(event: dict) -> str | None:
+    """The tool's textual result, whichever shape the host used to send it.
+
+    Confirmed against a real host, not assumed: built-in tools (Edit, Bash,
+    ...) send a flat string under ``tool_output``. MCP tools send
+    ``tool_response`` instead — a list mirroring MCP's own result shape,
+    ``[{"type": "text", "text": "..."}]`` — and ``tool_output`` is absent
+    entirely, which is what made every MCP call blocked as "no text output"
+    before this.
+
+    Only the single-text-part case is handled. Multiple parts, or anything
+    that is not plain text (an image, a resource blob), is a shape Blindfold
+    cannot safely mask through this single-string path — treated the same as
+    absent, so the caller blocks rather than guesses.
+    """
+    raw = event.get("tool_output")
+    if isinstance(raw, str):
+        return raw
+
+    response = event.get("tool_response")
+    if isinstance(response, list) and len(response) == 1:
+        part = response[0]
+        if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str):
+            return part["text"]
+    return None
+
+
 def handle_post_tool_use(
     event: dict,
     *,
@@ -91,16 +118,16 @@ def handle_post_tool_use(
         # behaviour, not a failure.
         return None
 
-    raw = event.get("tool_output")
-    if not isinstance(raw, str):
-        # Diagnostic, not guesswork: this is what actually showed up the first
-        # time a real host sent an MCP tool result — types and key names only,
-        # never a value, since the payload can legitimately hold the real
-        # hidden data at this point (masking has not run yet).
+    raw = _extract_tool_text(event)
+    if raw is None:
+        # Diagnostic, not guesswork: the shapes handled here are what actually
+        # showed up from a real host. Types and key names only, never a value —
+        # the payload can legitimately hold the real hidden data at this point,
+        # masking not having run yet.
         shape = {k: type(v).__name__ for k, v in event.items()}
         return _block(
-            f"{tool_name} declares protected fields but returned no text output "
-            f"(tool_output is {type(raw).__name__}; event shape: {shape})"
+            f"{tool_name} declares protected fields but returned no usable text "
+            f"(event shape: {shape})"
         )
     try:
         payload = json.loads(raw)

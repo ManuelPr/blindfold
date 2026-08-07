@@ -121,18 +121,15 @@ def test_declared_tool_that_cannot_be_tokenized_is_blocked(config, vault_path, o
 
 
 def test_the_no_text_output_block_names_the_events_shape_without_its_values(config, vault_path):
-    # Reproduced against a real host: PostToolUse blocked with only "returned
-    # no text output" and no way to tell what Claude Code had actually sent for
-    # an MCP tool call. The reason now carries the event's key names and Python
-    # types — never a value, since the payload can legitimately hold the real
-    # hidden data at this point, masking not having run yet.
+    # A shape this project has never seen and still can't extract from: no
+    # tool_output, and tool_response isn't the single-text-part list either.
+    # The reason must still say why, without ever repeating a real value.
     store = _store(vault_path)
     try:
         out = hooks.handle_post_tool_use(
             {
                 "session_id": SESSION,
                 "tool_name": TOOL,
-                "tool_output": {"salary": 71000},  # e.g. structured, not a string
                 "tool_response": "Andrea Tuscano 71000",  # a real value, must never appear
             },
             config=config,
@@ -141,10 +138,83 @@ def test_the_no_text_output_block_names_the_events_shape_without_its_values(conf
     finally:
         store.close()
     assert out["decision"] == "block"
-    assert "tool_output is dict" in out["reason"]
-    assert "tool_output" in out["reason"] and "tool_response" in out["reason"]
+    assert "tool_response" in out["reason"]
     assert "71000" not in out["reason"]
     assert "Andrea Tuscano" not in out["reason"]
+
+
+# --- tool_response: the actual shape a real host sends for MCP tools -------
+#
+# Reproduced live: a real PostToolUse event for an MCP tool call has no
+# tool_output key at all. The result arrives as tool_response, a list
+# mirroring MCP's own content shape — [{"type": "text", "text": "..."}] —
+# which is what every general-purpose hook doc example (built around Edit,
+# Bash) never mentions, because those tools use tool_output instead.
+
+
+def _mcp_post_tool_use_event(text: str, *, tool=TOOL, session=SESSION):
+    return {
+        "session_id": session,
+        "transcript_path": "/x/session.jsonl",
+        "cwd": "/x",
+        "prompt_id": "p1",
+        "permission_mode": "default",
+        "effort": {"level": "medium"},
+        "hook_event_name": "PostToolUse",
+        "tool_name": tool,
+        "tool_input": {"name": "Andrea Tuscano"},
+        "tool_response": [{"type": "text", "text": text}],
+        "tool_use_id": "toolu_01ABC",
+        "duration_ms": 42,
+    }
+
+
+def test_the_real_mcp_event_shape_is_tokenized(config, vault_path):
+    store = _store(vault_path)
+    try:
+        out = hooks.handle_post_tool_use(
+            _mcp_post_tool_use_event('{"name": "Andrea Tuscano", "salary": 71000}'),
+            config=config,
+            store=store,
+        )
+    finally:
+        store.close()
+    assert "decision" not in (out or {})
+    rewritten = json.loads(out["hookSpecificOutput"]["updatedToolOutput"])
+    assert rewritten["salary"].startswith("⟦tok_")
+    assert "71000" not in out["hookSpecificOutput"]["updatedToolOutput"]
+
+
+def test_multiple_content_parts_are_not_guessed_at(config, vault_path):
+    # Blindfold has no story yet for stitching several parts into one JSON
+    # document — block rather than silently mask only one of them.
+    store = _store(vault_path)
+    try:
+        out = hooks.handle_post_tool_use(
+            {**_mcp_post_tool_use_event(""), "tool_response": [
+                {"type": "text", "text": '{"salary": 71000}'},
+                {"type": "text", "text": "a second part"},
+            ]},
+            config=config,
+            store=store,
+        )
+    finally:
+        store.close()
+    assert out["decision"] == "block"
+    assert "71000" not in out["reason"]
+
+
+def test_a_non_text_content_part_is_not_guessed_at(config, vault_path):
+    store = _store(vault_path)
+    try:
+        out = hooks.handle_post_tool_use(
+            {**_mcp_post_tool_use_event(""), "tool_response": [{"type": "image", "data": "..."}]},
+            config=config,
+            store=store,
+        )
+    finally:
+        store.close()
+    assert out["decision"] == "block"
 
 
 # --- MessageDisplay -------------------------------------------------------

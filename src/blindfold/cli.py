@@ -38,15 +38,25 @@ def _split_argv(argv: list[str]) -> tuple[list[str], list[str]]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    # Windows' default console/subprocess codepage cannot encode the token
+    # Windows' default console/subprocess codepage cannot represent the token
     # delimiters U+27E6/U+27E7, and nothing upstream sets PYTHONIOENCODING for
     # a `uv tool install`-ed binary a host invokes as a bare command name —
     # which is exactly how the plugin's hooks and MCP server run it. Every
-    # subcommand below prints through text-mode stdout/stderr, so this forces
-    # UTF-8 once, here, rather than crashing at the first placeholder printed.
-    # Harmless to the proxy's own JSON-RPC path, which writes raw bytes via
-    # sys.stdout.buffer and never goes through this text layer at all.
-    for stream in (sys.stdout, sys.stderr):
+    # subcommand below reads or prints through text-mode stdio, so this forces
+    # UTF-8 once, here, rather than corrupting or crashing at the first
+    # placeholder touched. Harmless to the proxy's own JSON-RPC path, which
+    # reads and writes raw bytes via .buffer and never goes through this text
+    # layer at all.
+    #
+    # stdin needs the same treatment as stdout/stderr, and the failure mode is
+    # worse: reading a mis-decoded ⟦ doesn't raise, it silently produces a
+    # different character. `hook message-display` still parses as valid JSON
+    # and returns cleanly — TOKEN_PATTERN just never matches, so the hook
+    # answers "nothing to do" and the host displays the raw placeholder
+    # forever. Confirmed by running the exact same call with and without
+    # PYTHONIOENCODING set: identical event, one resolves the token, the other
+    # produces no output and no error.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure") and (stream.encoding or "").lower() != "utf-8":
             stream.reconfigure(encoding="utf-8")
 

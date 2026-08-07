@@ -1,18 +1,28 @@
 """The CLI entry point — currently just the encoding guard.
 
-Reproduced live before this test existed: `uv tool install .` on a stock
-Windows shell, then `blindfold hook session-start` with a config declaring any
-protected path, crashed with
+Two bugs, same root cause, found one after the other against a real host.
+
+`uv tool install .` on a stock Windows shell, then `blindfold hook
+session-start` with a config declaring any protected path, crashed with
 
     UnicodeEncodeError: 'charmap' codec can't encode character '⟦'
     in position 195: character maps to <undefined>
 
-at the `print(json.dumps(response, ...))` in run_hook. The token delimiters
-are U+27E6/U+27E7; Windows' default console codepage (cp1252) cannot encode
-them, and nothing sets PYTHONIOENCODING for a binary a host invokes by bare
-name — which is exactly how the plugin's hooks and MCP server run it. Every
-`blindfold` subcommand that can print a placeholder was exposed: hooks, and
-`audit` on a leak report.
+at `print(json.dumps(response, ...))` in run_hook — stdout. Fixed by forcing
+UTF-8 on stdout/stderr. That fix shipped, and the next real reproduction
+surfaced the other half: `hook message-display` on a message containing a real
+placeholder returned nothing at all — no crash, no error, no output — because
+`sys.stdin.read()` mis-decodes ⟦/⟧ under the same default codepage, and unlike
+the write side this does not raise. It silently produces a different
+character, TOKEN_PATTERN never matches, and the hook answers "nothing to do."
+Confirmed by running the identical call with and without PYTHONIOENCODING set:
+one resolves the token, the other produces no output and no error — see
+git history for the transcript.
+
+The token delimiters are U+27E6/U+27E7; Windows' default console codepage
+(cp1252) cannot represent them, and nothing sets PYTHONIOENCODING for a binary
+a host invokes by bare name — which is exactly how the plugin's hooks and MCP
+server run `blindfold`.
 
 These tests use fakes rather than an actual cp1252 stream, so the check is
 deterministic on every platform CI runs on, including the Linux and macOS
@@ -32,10 +42,11 @@ class _FakeStream:
     implemented in C, so it cannot be given a starting value to fix.
     """
 
-    def __init__(self, encoding: str):
+    def __init__(self, encoding: str, content: str = ""):
         self.encoding = encoding
         self.reconfigured_to: str | None = None
         self._chunks: list[str] = []
+        self._content = content
 
     def reconfigure(self, encoding: str) -> None:
         self.reconfigured_to = encoding
@@ -45,6 +56,9 @@ class _FakeStream:
         self._chunks.append(text)
         return len(text)
 
+    def read(self) -> str:
+        return self._content
+
     def flush(self) -> None:
         pass
 
@@ -52,14 +66,16 @@ class _FakeStream:
         return "".join(self._chunks)
 
 
-def test_main_forces_utf8_when_the_console_codepage_cannot_encode_tokens(monkeypatch, tmp_path):
+def test_main_forces_utf8_on_stdin_stdout_and_stderr(monkeypatch, tmp_path):
+    fake_in = _FakeStream("cp1252", content='{"session_id": "s", "source": "startup"}')
     fake_out, fake_err = _FakeStream("cp1252"), _FakeStream("cp1252")
+    monkeypatch.setattr(sys, "stdin", fake_in)
     monkeypatch.setattr(sys, "stdout", fake_out)
     monkeypatch.setattr(sys, "stderr", fake_err)
-    monkeypatch.setattr(sys, "stdin", io.StringIO('{"session_id": "s", "source": "startup"}'))
 
     cli.main(["hook", "session-start", "--config", str(tmp_path / "missing.yaml")])
 
+    assert fake_in.reconfigured_to == "utf-8"
     assert fake_out.reconfigured_to == "utf-8"
     assert fake_err.reconfigured_to == "utf-8"
 
