@@ -298,7 +298,9 @@ async def mode_c(workdir: Path) -> None:
     step("4", "MessageDisplay — the real values, on screen only")
     shown = hook(
         "message-display",
-        {"session_id": "S1", "message_text": f"The highest salary is {top}."},
+        # "delta", not "message_text" — see handle_message_display's docstring:
+        # the real host sends the newly-completed-lines chunk under this key.
+        {"session_id": "S1", "delta": f"The highest salary is {top}."},
         config_path,
     )
     show("the transcript keeps", f"The highest salary is {top}.")
